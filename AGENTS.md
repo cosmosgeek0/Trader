@@ -1,6 +1,10 @@
 # Trader
 
-Trader is one personal Binance trading program. Build it vertically, one complete working capability at a time. Normal basis, reverse basis, and volume are long-term directions, not permission to build ahead.
+Trader is one personal Binance trading program. Three came before it and died the same death: agents invented gates, ceremonies, and bloat, other agents obeyed them, and the projects buried themselves. This file is what keeps the fourth one alive.
+
+The work is rewarded for exactly three things. A simple, clear, lightning-fast implementation with nothing standing in the middle. Live money proof — your own dry read, then the real run, nothing between. The owner's word followed without your own biases added. Code written once that works beats code edited twenty times; every shortcut is paid for by the next worker.
+
+Build it vertically, one complete working capability at a time. Normal basis, reverse basis, and volume are long-term directions, not permission to build ahead.
 
 The owner gives the only current capability, money amount, and execution path in chat. Unless the owner says otherwise there, live proofs use ETHUSDT with 25 USDT per leg at market, and market analysis uses 500 USDT. Do not ask the owner for what this file already answers.
 
@@ -26,15 +30,20 @@ The owner gives the only current capability, money amount, and execution path in
 ## Work style
 
 - Prefer the smallest clear implementation that fully works. Working bloat is rejected.
+- Before editing, also quote the AGENTS.md lines that govern the change.
 - Judge simplicity by the complete trading flow: direct steps, plain names, few moving parts, and no repeated behavior.
+- The code is lightning fast and stays that way: direct calls and the best available tools, plainly used.
+- Before adding anything, ask whether it makes the code slower or the flow longer. If it does, it is the defect; gates, ceremonies, and invented process are always defects.
 - If the repository is empty, start with one working Python file. Otherwise extend the current working program.
 - Build vertically. Do not create separate pieces and hope to connect them later.
 - Every added line must serve the current capability or a failure observed in a real run.
 - Do not add future features, imagined failures, speculative safety, dormant options, or architecture for style.
+- The only money gate is `run.txt`. Do not build approval flows, confirmations, dry runs, preflight checks, pipelines, or background runners; safety is the owner running the command.
 - Do not create volume.py or any strategy file before the owner names that capability.
 - The basis lifecycles are market-only; do not add limit modes to them without an owner instruction.
 - Prefer changing or deleting existing code over adding wrappers, parallel paths, second implementations, or new architecture.
 - When new code replaces old behavior, delete the old behavior. "It still works" and "it is harmless" are not reasons to keep it.
+- When a section has rotted, rewrite it fresh from what it must do. Do not repair it patch by patch, and do not paste blocks from old code.
 - Keep one implementation for each behavior and one definition for each money value.
 - Extract shared code only after real repetition exists and only when the complete trading flow becomes simpler.
 - Do not split one readable sequence into many helpers, classes, files, or layers merely to make it look structured.
@@ -66,6 +75,7 @@ The owner gives the only current capability, money amount, and execution path in
 - The packet is one self-contained text: this file verbatim, the owner's task verbatim, every active file in full, the exact change with before and after code, all live output including failed runs, and prior rounds' adjudicated results. Never include the builder's own review or conclusions.
 - The critic does not edit code and does not propose speculative features, architecture, style preferences, or general hardening.
 - Every finding must name the exact location, concrete wrong behavior, supporting code or live fact, consequence, and smallest correction.
+- The critic's verdict also answers: is this the smallest, fastest form of the capability? Structure beyond that is a concrete defect, not a style preference.
 - The builder verifies every finding against the code and Binance. Confirmed findings earn the smallest fix and a full live rerun. Unsupported findings are rejected.
 - Repeat fix, full live rerun with the capability's own symbol and amount, and critic until it answers "no concrete defect found", then freeze the capability.
 - A finding refuted by a critic round and accepted by the builder, or rejected by the owner, stays closed. Reopen only on a new live failure or an owner instruction.

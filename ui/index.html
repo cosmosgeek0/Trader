@@ -1,0 +1,736 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quant</title>
+<link rel="icon" type="image/png" href="brand-mark.png">
+<style>
+  /* Quant shell — extracted clean from the old room: sidebar, clock,
+     search, tooltips, account popup, theme system. No network pages,
+     no news plumbing, no backend. Pages are skeletons to design on. */
+  @font-face {
+    font-family: "InterVariable";
+    src: url("fonts/InterVariable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "JBMono";
+    src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "JBMono";
+    src: url("fonts/JetBrainsMono-Medium.woff2") format("woff2");
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+  }
+  :root {
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --ink: #0d0d0d;
+    --muted: #5d5d5d;
+    --faint: #b9bbc0;
+    --line: rgba(13, 13, 13, 0.07);
+    --line-2: rgba(13, 13, 13, 0.12);
+    --pill: #ededed;
+    --hover: #f5f5f5;
+    --focus: #2557d6;
+    --t: 130ms cubic-bezier(0.2, 0, 0, 1);
+    --mono: "JBMono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #111318;
+    --panel: #171a20;
+    --ink: #e8eaef;
+    --muted: #9aa0ab;
+    --faint: #565c66;
+    --line: rgba(255, 255, 255, 0.08);
+    --line-2: rgba(255, 255, 255, 0.14);
+    --pill: rgba(255, 255, 255, 0.10);
+    --hover: rgba(255, 255, 255, 0.06);
+    --focus: #7d9bff;
+  }
+  html[data-theme="dark"] .mark,
+  html[data-theme="dark"] .word { filter: invert(1); }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  html { background: var(--bg); }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 14px/1.5 InterVariable, Inter, -apple-system, sans-serif;
+    font-feature-settings: "tnum" 1, "lnum" 1;
+  }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  button { font: inherit; color: inherit; }
+
+  .frame { display: flex; min-height: 100vh; }
+
+  .side {
+    flex: none;
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    padding: 14px 0 14px;
+    width: 64px;
+    transition: width 200ms cubic-bezier(0.2, 0, 0, 1);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+
+  .side-top { display: flex; align-items: center; justify-content: center; min-height: 40px; }
+  .brand-btn {
+    display: flex; align-items: center; gap: 10px;
+    background: none; border: 0; padding: 4px;
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background var(--t), transform var(--t);
+  }
+  .side[data-state="collapsed"] .brand-btn:hover { background: var(--hover); transform: scale(1.04); }
+  .side[data-state="collapsed"] .brand-btn:active { transform: scale(0.97); }
+  .brand-btn .mark { display: block; height: 32px; width: auto; }
+  .brand-btn .word { display: none; height: 14px; width: auto; }
+
+  .side-collapse {
+    display: none;
+    width: 32px; height: 32px;
+    align-items: center; justify-content: center;
+    background: none; border: 0; padding: 0;
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: pointer;
+    transition: background var(--t), color var(--t), transform var(--t);
+  }
+  .side-collapse:hover { background: var(--hover); color: var(--ink); }
+  .side-collapse:active { transform: scale(0.94); }
+  .side-collapse svg { width: 17px; height: 17px; stroke-width: 1.5; }
+
+  .side[data-state="expanded"] { width: 184px; }
+  .side[data-state="expanded"] .side-top {
+    justify-content: flex-start;
+    padding: 0 10px 0 14px;
+  }
+  .side[data-state="expanded"] .brand-btn { cursor: default; flex: 1; }
+  .side[data-state="expanded"] .brand-btn .mark { height: 28px; }
+  .side[data-state="expanded"] .brand-btn .word { display: block; }
+  .side[data-state="expanded"] .side-collapse { display: flex; }
+
+  .side nav { display: flex; flex-direction: column; gap: 12px; margin-top: 26px; align-items: center; }
+  .nav-row {
+    display: flex; align-items: center; justify-content: center;
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    color: var(--muted);
+    text-decoration: none;
+    transition: background var(--t), color var(--t), transform var(--t);
+  }
+  .nav-row .nm { display: none; font-size: 13.5px; }
+  a.nav-row:hover { background: var(--hover); color: var(--ink); transform: translateX(1px); }
+  a.nav-row:active { transform: scale(0.97); }
+  .nav-row.active { background: var(--pill); color: var(--ink); }
+  .nav-row svg { width: 22px; height: 22px; stroke-width: 1.5; flex: none; transition: transform var(--t); }
+  a.nav-row:hover svg { transform: scale(1.06); }
+  .side[data-state="expanded"] nav { align-items: stretch; padding: 0 10px; }
+  .side[data-state="expanded"] .nav-row {
+    width: auto;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 0 10px;
+  }
+  .side[data-state="expanded"] .nav-row .nm { display: inline; }
+  .side[data-state="expanded"] .nav-row.active .nm { font-weight: 500; }
+
+  .profile {
+    margin-top: auto;
+    display: flex; align-items: center; justify-content: center;
+    align-self: center;
+    width: 44px; height: 44px;
+    background: none; border: 0; padding: 0;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background var(--t), transform var(--t);
+  }
+  .profile:hover { background: var(--hover); }
+  .profile:active { transform: scale(0.96); }
+  .avatar {
+    position: relative;
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    flex: none;
+    background: #16255f url("avatar.png") center / cover no-repeat;
+  }
+  .avatar::after {
+    content: "";
+    position: absolute;
+    right: -2px; bottom: -2px;
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: #23262c;
+    border: 2.5px solid var(--bg);
+  }
+  .profile .pcol { display: none; min-width: 0; text-align: left; }
+  .side[data-state="expanded"] .profile {
+    align-self: stretch;
+    width: auto;
+    margin: auto 10px 0;
+    justify-content: flex-start;
+    gap: 11px;
+    padding: 0 8px;
+    height: 56px;
+  }
+  .side[data-state="expanded"] .profile .avatar { width: 32px; height: 32px; }
+  .side[data-state="expanded"] .profile .pcol { display: flex; flex-direction: column; line-height: 1.4; gap: 1px; }
+  .profile .pname { font-size: 14px; font-weight: 500; color: var(--ink); }
+  .profile .prole { font-size: 12px; color: var(--muted); }
+
+  main { flex: 1; min-width: 0; }
+
+  .page-shell { padding: 72px 40px 56px; }
+  .page-title { font-size: 26px; font-weight: 650; color: var(--ink); letter-spacing: -0.015em; }
+  .page-sub { margin-top: 8px; font-size: 13.5px; color: var(--muted); }
+
+  .topbar-right {
+    position: fixed;
+    top: 7px;
+    right: 40px;
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .clockpill {
+    flex: none;
+    width: 130px;
+    height: 42px;
+    padding: 5px;
+    --clock-accent: #12a150;
+  }
+  .clock-command-pill {
+    display: inline-flex;
+    align-items: center;
+    width: 100%;
+    height: 32px;
+    padding: 0 8px 0 6px;
+    border: 1px solid color-mix(in srgb, var(--ink) 16%, var(--line));
+    border-radius: 10px;
+    color: var(--clock-accent);
+  }
+  .clock-hourglass-mark {
+    display: block;
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    overflow: visible;
+    color: var(--clock-accent);
+  }
+  .clock-hourglass-rotor {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: clockHourglassFlip 8.4s cubic-bezier(0.62, 0, 0.28, 1) infinite;
+    will-change: transform;
+  }
+  .clock-hourglass-cap { fill: color-mix(in srgb, currentColor 74%, #545a6d); }
+  .clock-hourglass-glass {
+    fill: color-mix(in srgb, var(--panel) 90%, transparent);
+    stroke: color-mix(in srgb, currentColor 22%, var(--muted));
+    stroke-width: 1.25;
+    stroke-linejoin: round;
+  }
+  .clock-hourglass-sand {
+    fill: currentColor;
+    opacity: 0.72;
+    animation: clockSandBreathe 4.2s ease-in-out infinite;
+  }
+  .clock-hourglass-stream {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.4;
+    stroke-linecap: round;
+    opacity: 0.64;
+    animation: clockSandStream 2.1s ease-in-out infinite;
+  }
+  .clock-command-time {
+    margin-left: 5px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: -0.025em;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums lining-nums;
+    white-space: nowrap;
+  }
+  .clock-command-bullet {
+    flex: 0 0 3px;
+    width: 3px;
+    height: 3px;
+    margin: 0 5px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--clock-accent) 72%, var(--muted));
+  }
+  .clock-command-zone {
+    min-width: 0;
+    color: color-mix(in srgb, var(--clock-accent) 82%, var(--ink));
+    font-size: 11.5px;
+    font-weight: 620;
+    letter-spacing: 0.045em;
+    line-height: 14px;
+    white-space: nowrap;
+  }
+  @keyframes clockHourglassFlip {
+    0%, 39% { transform: rotate(0deg); }
+    52%, 89% { transform: rotate(180deg); }
+    100% { transform: rotate(360deg); }
+  }
+  @keyframes clockSandBreathe {
+    0%, 100% { opacity: 0.58; }
+    50% { opacity: 0.88; }
+  }
+  @keyframes clockSandStream {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 0.78; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .clock-hourglass-rotor,
+    .clock-hourglass-sand,
+    .clock-hourglass-stream { animation: none; }
+  }
+
+  .qsearch {
+    position: relative;
+    width: 344px;
+  }
+  .qsearch-box {
+    position: relative;
+    z-index: 96;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 42px;
+    padding: 0 8px 0 14px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    color: var(--muted);
+    transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
+  }
+  .qsearch-box.on {
+    border-color: var(--focus);
+    box-shadow: 0 0 0 3px rgba(37, 87, 214, 0.13);
+  }
+  .qsearch-box input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
+    outline: none;
+    color: var(--ink);
+    font-size: 13.5px;
+    font-family: inherit;
+  }
+  .qsearch-box input::placeholder { color: var(--faint); }
+  .qsearch-box > svg {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    stroke-width: 1.8;
+    color: var(--muted);
+  }
+  .qsearch-k {
+    flex: none;
+    border: 0;
+    background: color-mix(in srgb, var(--ink) 3%, var(--panel));
+    border-radius: 8px;
+    height: 26px;
+    padding: 0 8px;
+    font-size: 10.5px;
+    font-weight: 680;
+    color: var(--muted);
+    font-family: var(--mono);
+    cursor: pointer;
+  }
+  .qsearch-k:hover { color: var(--focus); }
+  html[data-theme="dark"] .qsearch-box {
+    border-color: color-mix(in srgb, var(--line) 88%, #fff 4%);
+    background: color-mix(in srgb, var(--panel) 94%, #fff 2%);
+  }
+  html[data-theme="dark"] .qsearch-box.on {
+    box-shadow: none;
+  }
+
+  .qsearch {
+    --search-beam-speed: 10s;
+    --search-beam-width: 34%;
+    --search-beam-size: 1px;
+    --search-beam-peak: 0.34;
+    --search-beam-shadow: 0.10;
+  }
+  .qsearch.open {
+    --search-beam-speed: 4.8s;
+    --search-beam-width: 30%;
+    --search-beam-size: 2px;
+    --search-beam-peak: 0.94;
+    --search-beam-shadow: 0.30;
+  }
+  .search-beam {
+    position: absolute;
+    inset: 0;
+    display: block;
+    overflow: hidden;
+    border-radius: 999px;
+    pointer-events: none;
+    z-index: 97;
+  }
+  .search-beam::before,
+  .search-beam::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    width: var(--search-beam-width);
+    height: var(--search-beam-size);
+    border-radius: 999px;
+    opacity: 0;
+    transform: translate3d(-128%, 0, 0);
+    will-change: transform, opacity;
+    background:
+      radial-gradient(circle at 88% 50%, rgba(255, 255, 255, calc(var(--search-beam-peak) * 0.96)) 0 1.5px, transparent 3px),
+      linear-gradient(90deg,
+        transparent 0%,
+        rgba(56, 189, 248, 0) 12%,
+        rgba(56, 189, 248, calc(var(--search-beam-peak) * 0.26)) 34%,
+        rgba(37, 99, 235, calc(var(--search-beam-peak) * 0.62)) 66%,
+        rgba(255, 255, 255, calc(var(--search-beam-peak) * 0.90)) 86%,
+        transparent 100%);
+    box-shadow:
+      0 0 7px rgba(56, 189, 248, var(--search-beam-shadow)),
+      0 0 12px rgba(37, 99, 235, calc(var(--search-beam-shadow) * 0.72));
+    animation: searchPairedBeamIdle var(--search-beam-speed) cubic-bezier(0.22, 0.82, 0.18, 1) infinite;
+  }
+  .search-beam::before { top: 1px; }
+  .search-beam::after { bottom: 1px; animation-delay: 0.04s; }
+  .qsearch.open .search-beam::before,
+  .qsearch.open .search-beam::after {
+    animation-name: searchPairedBeamActive;
+  }
+  @keyframes searchPairedBeamIdle {
+    0%, 68%, 100% { opacity: 0; transform: translate3d(-128%, 0, 0); }
+    5% { opacity: calc(var(--search-beam-peak) * 0.54); }
+    13% { opacity: var(--search-beam-peak); }
+    25% { opacity: calc(var(--search-beam-peak) * 0.68); }
+    31% { opacity: 0; transform: translate3d(334%, 0, 0); }
+  }
+  @keyframes searchPairedBeamActive {
+    0%, 80%, 100% { opacity: 0; transform: translate3d(-132%, 0, 0); }
+    7% { opacity: calc(var(--search-beam-peak) * 0.74); }
+    18%, 43% { opacity: var(--search-beam-peak); }
+    60% { opacity: 0; transform: translate3d(342%, 0, 0); }
+  }
+  html[data-theme="dark"] .qsearch .search-beam::before,
+  html[data-theme="dark"] .qsearch .search-beam::after {
+    opacity: 0;
+    animation: none;
+    box-shadow: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .search-beam::before,
+    .search-beam::after {
+      animation: none;
+      opacity: 0.18;
+      transform: translate3d(210%, 0, 0);
+    }
+  }
+
+  .qsearch-pop {
+    position: fixed;
+    top: 88px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(880px, 74vw);
+    z-index: 95;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 14px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.22);
+    padding: 6px;
+    max-height: min(66vh, 720px);
+    overflow-y: auto;
+  }
+  .qsearch-dim {
+    position: fixed;
+    inset: 0;
+    z-index: 94;
+    background: rgba(13, 13, 13, 0.32);
+  }
+  html[data-theme="dark"] .qsearch-dim {
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .ssr-group-title {
+    padding: 7px 8px 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .ssr-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ssr-row.sel { background: rgba(37, 87, 214, 0.08); }
+  .ssr-mark {
+    flex: none;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    background: var(--pill);
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ssr-mark svg { width: 13px; height: 13px; stroke-width: 1.7; }
+  .ssr-asset { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .ssr-label {
+    font-size: 12.5px;
+    font-weight: 620;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ssr-hint {
+    font-size: 10px;
+    color: var(--faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ssr-action { font-size: 11px; color: var(--muted); }
+  .ssr-empty { padding: 10px; font-size: 11.5px; color: var(--muted); }
+
+  #tip {
+    position: fixed;
+    z-index: 50;
+    display: flex; align-items: center; gap: 7px;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    padding: 5px 9px;
+    font-size: 12.5px;
+    color: var(--ink);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(-2px);
+    transition: opacity 120ms ease, transform 120ms ease;
+    white-space: nowrap;
+  }
+  #tip.on { opacity: 1; transform: translateX(0); }
+  #tip .kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 17px; height: 17px;
+    padding: 0 4px;
+    border: 1px solid var(--line-2);
+    border-radius: 5px;
+    font-size: 10.5px;
+    color: var(--muted);
+  }
+
+  .pop {
+    position: fixed;
+    z-index: 60;
+    width: 292px;
+    background: var(--panel);
+    border: 1px solid var(--line-2);
+    border-radius: 14px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.12);
+    padding: 6px;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 130ms ease, transform 130ms ease;
+  }
+  .pop.on { opacity: 1; transform: translateY(0); }
+  .pop-id {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 8px 5px 12px;
+  }
+  .pop-id .pname { font-size: 14px; font-weight: 500; color: var(--ink); }
+  .theme-trio {
+    display: inline-flex;
+    gap: 2px;
+    border: 1px solid var(--line-2);
+    border-radius: 8px;
+    padding: 2px;
+  }
+  .tbtn {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: 0; padding: 0;
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    transition: background var(--t), color var(--t);
+  }
+  .tbtn:hover { background: var(--hover); color: var(--ink); }
+  .tbtn.on {
+    background: var(--panel);
+    color: var(--ink);
+    border: 1px solid var(--line-2);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.07);
+  }
+  .tbtn svg { width: 18px; height: 18px; stroke-width: 1.6; }
+  .pop-sep { height: 1px; background: var(--line); margin: 5px 4px; }
+  .pop-row {
+    display: flex; align-items: center; gap: 11px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    text-decoration: none;
+    cursor: pointer;
+    transition: background var(--t);
+  }
+  .pop-row:hover { background: var(--hover); }
+  .pop-row svg { width: 17px; height: 17px; stroke-width: 1.6; color: var(--muted); flex: none; }
+  .pop-row .pv { margin-left: auto; font-size: 13px; color: var(--muted); }
+  .pop-row.inert { cursor: default; color: var(--muted); }
+  .pop-row.inert:hover { background: none; }
+  .pop-row.danger:hover { background: rgba(204, 47, 60, 0.08); color: #cc2f3c; }
+  .pop-row.danger:hover svg { color: #cc2f3c; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .side, .nav-row, .brand-btn, .side-collapse, .nav-row svg, #tip,
+    .pop, .profile, .tbtn, .pop-row { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="side" id="side" data-state="collapsed">
+    <div class="side-top">
+      <button class="brand-btn" id="brand-btn" aria-label="Expand sidebar" data-tip="Expand" data-kbd="1">
+        <img class="mark" src="lockup-mark.png" alt="">
+        <img class="word" src="lockup-word.png" alt="Quant">
+      </button>
+      <button class="side-collapse" id="side-collapse" aria-label="Collapse sidebar" data-tip="Collapse" data-kbd="1">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19V5"/><path d="m13 6-6 6 6 6"/><path d="M7 12h14"/></svg>
+      </button>
+    </div>
+    <nav aria-label="Pages">
+      <a class="nav-row" href="#overview" data-page="overview" data-tip="Overview" aria-label="Overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+        <span class="nm">Overview</span>
+      </a>
+      <a class="nav-row" href="#basis" data-page="basis" data-tip="Basis" aria-label="Basis">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="m19 8 3 8a5 5 0 0 1-6 0zV7"/><path d="M3 7h1a17 17 0 0 0 8-2 17 17 0 0 0 8 2h1"/><path d="m5 8 3 8a5 5 0 0 1-6 0zV7"/><path d="M7 21h10"/></svg>
+        <span class="nm">Basis</span>
+      </a>
+      <a class="nav-row" href="#volume" data-page="volume" data-tip="Volume" aria-label="Volume">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/></svg>
+        <span class="nm">Volume</span>
+      </a>
+      <a class="nav-row" href="#machine" data-page="machine" data-tip="Machine" aria-label="Machine">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></svg>
+        <span class="nm">Machine</span>
+      </a>
+      <a class="nav-row" href="#logs" data-page="logs" data-tip="Logs" aria-label="Logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17V7"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M4 3a1 1 0 0 1 1-1 1.3 1.3 0 0 1 .7.2l.933.6a1.3 1.3 0 0 0 1.4 0l.934-.6a1.3 1.3 0 0 1 1.4 0l.933.6a1.3 1.3 0 0 0 1.4 0l.933-.6a1.3 1.3 0 0 1 1.4 0l.934.6a1.3 1.3 0 0 0 1.4 0l.933-.6A1.3 1.3 0 0 1 19 2a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1 1.3 1.3 0 0 1-.7-.2l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.934.6a1.3 1.3 0 0 1-1.4 0l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-1.4 0l-.934-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-.7.2 1 1 0 0 1-1-1z"/></svg>
+        <span class="nm">Logs</span>
+      </a>
+      <a class="nav-row" href="#settings" data-page="settings" data-tip="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="nm">Settings</span>
+      </a>
+    </nav>
+    <button class="profile" id="profile" aria-controls="pop" aria-expanded="false" aria-label="Account">
+      <span class="avatar" aria-hidden="true"></span>
+      <span class="pcol">
+        <span class="pname">CosmosGeek</span>
+        <span class="prole">Owner</span>
+      </span>
+    </button>
+  </div>
+  <main>
+    <div class="topbar-right">
+      <div class="clockpill" title="Market Clock — UTC · +00:00">
+        <span class="clock-command-pill">
+          <svg class="clock-hourglass-mark" viewBox="0 0 36 36" aria-hidden="true">
+            <g class="clock-hourglass-rotor">
+              <rect class="clock-hourglass-cap" x="6" y="3" width="24" height="4" rx="2"/>
+              <rect class="clock-hourglass-cap" x="6" y="29" width="24" height="4" rx="2"/>
+              <path class="clock-hourglass-glass" d="M10 7h16c0 6.2-3.1 8-8 11 4.9 3 8 4.8 8 11H10c0-6.2 3.1-8 8-11-4.9-3-8-4.8-8-11Z"/>
+              <path class="clock-hourglass-sand" d="M12.2 9h11.6c-.7 3.2-2.7 4.8-5.8 6.8-3.1-2-5.1-3.6-5.8-6.8Zm0 18c.7-3.2 2.7-4.8 5.8-6.8 3.1 2 5.1 3.6 5.8 6.8H12.2Z"/>
+              <path class="clock-hourglass-stream" d="M18 15.4v5.2"/>
+            </g>
+          </svg>
+          <span class="clock-command-time" id="clock">—:—</span>
+          <i class="clock-command-bullet" aria-hidden="true"></i>
+          <span class="clock-command-zone">UTC</span>
+        </span>
+      </div>
+      <div class="qsearch" id="qsearch">
+        <div class="qsearch-box" id="qsearch-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="qsearch-input" type="text" placeholder="Search pages"
+                 aria-label="Search" autocomplete="off" spellcheck="false">
+          <button class="qsearch-k" id="qsearch-k" tabindex="-1" title="Focus search (⌘K)">⌘K</button>
+        </div>
+        <span class="search-beam" aria-hidden="true"></span>
+        <div class="qsearch-dim" id="qsearch-dim" hidden></div>
+        <div class="qsearch-pop" id="qsearch-pop" hidden></div>
+      </div>
+    </div>
+    <div id="page"></div>
+  </main>
+</div>
+
+<div class="pop" id="pop" hidden>
+  <div class="pop-id">
+    <span class="pname">CosmosGeek</span>
+    <div class="theme-trio" role="group" aria-label="Theme">
+      <button class="tbtn" data-theme-set="system" aria-label="System theme" title="System">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+      </button>
+      <button class="tbtn" data-theme-set="light" aria-label="Light theme" title="Light">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+      </button>
+      <button class="tbtn" data-theme-set="dark" aria-label="Dark theme" title="Dark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="pop-sep"></div>
+  <div class="pop-row inert" title="English only for now">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+    <span>Language</span>
+    <span class="pv">English</span>
+  </div>
+  <div class="pop-sep"></div>
+  <a class="pop-row danger" href="/cdn-cgi/access/logout">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg>
+    Log out
+  </a>
+</div>
+
+<div id="tip" role="tooltip" aria-hidden="true"></div>
+<script src="shell.js"></script>
+</body>
+</html>

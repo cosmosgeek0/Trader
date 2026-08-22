@@ -1,3 +1,5 @@
+import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -156,6 +158,72 @@ def table(argv):
                       f"sVol {Decimal(s24['quoteVolume']) / 1000000:.1f}M "
                       f"fVol {Decimal(f24['quoteVolume']) / 1000000:.1f}M "
                       f"fut book stamp {fage} ms old, read {read_ms} ms", flush=True)
+            time.sleep(2)
+    except KeyboardInterrupt:
+        return
+
+
+def board(argv):
+    spots = {s["symbol"] for s in public(SPOT + "/api/v3/exchangeInfo")["symbols"]
+             if s["quoteAsset"] == "USDT" and s["status"] == "TRADING" and s["isSpotTradingAllowed"]}
+    perps = {s["symbol"] for s in public(FAPI + "/fapi/v1/exchangeInfo")["symbols"]
+             if s["contractType"] == "PERPETUAL" and s["status"] == "TRADING" and s["quoteAsset"] == "USDT"}
+    hours = {i["symbol"]: i["fundingIntervalHours"] for i in public(FAPI + "/fapi/v1/fundingInfo")}
+    count = {"both": len(spots & perps), "spot": len(spots - perps), "fut": len(perps - spots),
+             "total": len(spots | perps)}
+    pool = {}
+    pool_at = 0.0
+    day = {}
+    day_at = 0.0
+    try:
+        while True:
+            if time.time() - pool_at > 30:
+                pool = {a: Decimal(v) for a, v in signed(SPOT + "/sapi/v1/margin/available-inventory",
+                                                         {"type": "MARGIN"})["assets"].items()}
+                pool_at = time.time()
+            if time.time() - day_at > 60:
+                day = {("s", t["symbol"]): t for t in public(SPOT + "/api/v3/ticker/24hr")}
+                day.update({("f", t["symbol"]): t for t in public(FAPI + "/fapi/v1/ticker/24hr")})
+                day_at = time.time()
+            sb = {t["symbol"]: t for t in public(SPOT + "/api/v3/ticker/bookTicker") if t["symbol"] in spots}
+            fb = {t["symbol"]: t for t in public(FAPI + "/fapi/v1/ticker/bookTicker") if t["symbol"] in perps}
+            prem = {p["symbol"]: p for p in public(FAPI + "/fapi/v1/premiumIndex") if p["symbol"] in perps}
+            rows = []
+            for sym in spots | perps:
+                s, f, p = sb.get(sym), fb.get(sym), prem.get(sym)
+                sd = day.get(("s", sym)) if sym in spots else None
+                fd = day.get(("f", sym)) if sym in perps else None
+                r = {"sym": sym, "cat": "both" if sym in spots and sym in perps else "spot" if sym in spots else "fut",
+                     "pool": pool.get(sym[:-4], Decimal(0)) > 0}
+                if s:
+                    r.update(sbid=s["bidPrice"], sask=s["askPrice"], sbq=s["bidQty"], saq=s["askQty"])
+                if f:
+                    r.update(fbid=f["bidPrice"], fask=f["askPrice"], fbq=f["bidQty"], faq=f["askQty"])
+                if p:
+                    fund = Decimal(p["lastFundingRate"]) * 100
+                    r.update(fund=round(float(fund), 6), hours=hours.get(sym, 8),
+                             fday=round(float(fund * 24 / hours.get(sym, 8)), 4),
+                             prem=round(float((Decimal(p["markPrice"]) - Decimal(p["indexPrice"]))
+                                              / Decimal(p["indexPrice"]) * 100), 4))
+                if s and f and Decimal(s["askPrice"]) > 0 and Decimal(f["askPrice"]) > 0:
+                    r.update(ngap=round(float((Decimal(f["bidPrice"]) - Decimal(s["askPrice"])) / Decimal(s["askPrice"]) * 100), 4),
+                             rgap=round(float((Decimal(s["bidPrice"]) - Decimal(f["askPrice"])) / Decimal(f["askPrice"]) * 100), 4))
+                if sd:
+                    r.update(svol=round(float(sd["quoteVolume"])), schg=float(sd["priceChangePercent"]), strades=sd["count"])
+                if fd:
+                    r.update(fvol=round(float(fd["quoteVolume"])), fchg=float(fd["priceChangePercent"]), ftrades=fd["count"])
+                if sd and fd and float(sd["quoteVolume"]) > 0:
+                    r["ratio"] = round(float(fd["quoteVolume"]) / float(sd["quoteVolume"]), 2)
+                rows.append(r)
+            with open("board.tmp", "w") as out:
+                json.dump({"at": int(time.time() * 1000), "count": count, "rows": rows}, out)
+            os.replace("board.tmp", "board.json")
+            lead_r = sorted([r for r in rows if "rgap" in r and r["pool"]], key=lambda r: r["rgap"], reverse=True)[:5]
+            lead_n = sorted([r for r in rows if "ngap" in r], key=lambda r: r["ngap"], reverse=True)[:5]
+            print(time.strftime("%H:%M:%S") + f" {count['total']} tokens ({count['both']} both, {count['spot']} spot-only, "
+                  f"{count['fut']} fut-only) | reverse pool>0 "
+                  + " ".join(f"{r['sym']} {r['rgap']:+.2f}%" for r in lead_r) + " | normal "
+                  + " ".join(f"{r['sym']} {r['ngap']:+.2f}%" for r in lead_n), flush=True)
             time.sleep(2)
     except KeyboardInterrupt:
         return

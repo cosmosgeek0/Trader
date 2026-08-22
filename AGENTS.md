@@ -12,6 +12,10 @@ The owner gives the only current capability, money amount, and execution path in
 
 - Repository: `https://github.com/cosmosgeek0/Trader`. Local root: `/Users/cosmosgeek/Desktop/Trader`. Start and work only inside it.
 - `ui/` is the frontend; money code never lives there.
+- Run the UI only as `trader-ui` through `ui.service`. Its only writable state is `/var/lib/trader-ui/logins.json`; never put login data inside the public `ui/` directory.
+- Cloudflare reaches the UI only through `/run/trader-ui-socket/ui.sock`; never restore a TCP listener. The `cloudflared` user belongs to the `trader-ui` group only to open that socket.
+- The UI process must remain unable to read `secret-id.txt` or the trading Python files and unable to reach EC2 instance metadata or Binance. Do not weaken the boundaries in `ui.service`.
+- Keep every Devices row, show 20 per numbered page, log out only the selected device, and reuse its row after it signs in again. Do not replace device logout with broad Cloudflare logout.
 - Live code runs on AWS EC2 `i-0e87fe0e7ba2063a9` in `ap-south-1` through AWS SSM.
 - Reach the host with `ssh cosmos 'COMMAND'`; copy files with `scp LOCAL_FILE cosmos:REMOTE_PATH`. Both are already configured on this Mac.
 - The live Binance account is reached only from that host.
@@ -38,7 +42,7 @@ The owner gives the only current capability, money amount, and execution path in
 - Build vertically. Do not create separate pieces and hope to connect them later.
 - Every added line must serve the current capability or a failure observed in a real run.
 - Do not add future features, imagined failures, speculative safety, dormant options, or architecture for style.
-- The only money gate is `run.txt`. Do not build approval flows, confirmations, dry runs, preflight checks, pipelines, or background runners; safety is the owner running the command.
+- The only approval gate is `run.txt`. Exchange-required facts such as tradability, quantity rules, borrowability, current positions, and exit availability are part of the trade itself, not approval systems. Do not build additional approval flows, ceremonies, pipelines, or background runners.
 - Do not create volume.py or any strategy file before the owner names that capability.
 - The basis lifecycles are market-only; do not add limit modes to them without an owner instruction.
 - Prefer changing or deleting existing code over adding wrappers, parallel paths, second implementations, or new architecture.

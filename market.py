@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -164,13 +165,22 @@ def table(argv):
 
 
 def board(argv):
-    spots = {s["symbol"] for s in public(SPOT + "/api/v3/exchangeInfo")["symbols"]
+    spots = {s["symbol"]: s["baseAsset"] for s in public(SPOT + "/api/v3/exchangeInfo")["symbols"]
              if s["quoteAsset"] == "USDT" and s["status"] == "TRADING" and s["isSpotTradingAllowed"]}
-    perps = {s["symbol"] for s in public(FAPI + "/fapi/v1/exchangeInfo")["symbols"]
+    perps = {s["symbol"]: s["baseAsset"] for s in public(FAPI + "/fapi/v1/exchangeInfo")["symbols"]
              if s["contractType"] == "PERPETUAL" and s["status"] == "TRADING" and s["quoteAsset"] == "USDT"}
     hours = {i["symbol"]: i["fundingIntervalHours"] for i in public(FAPI + "/fapi/v1/fundingInfo")}
-    count = {"both": len(spots & perps), "spot": len(spots - perps), "fut": len(perps - spots),
-             "total": len(spots | perps)}
+    by_base = {base: sym for sym, base in spots.items()}
+    fut_of = {}
+    for fsym, base in perps.items():
+        m = re.match(r"(1000000|1000|1M)(.+)", base)
+        if fsym not in spots and m and m.group(2) in by_base:
+            fut_of[by_base[m.group(2)]] = (fsym, {"1000": 1000, "1000000": 1000000, "1M": 1000000}[m.group(1)])
+        else:
+            fut_of[fsym] = (fsym, 1)
+    tokens = spots.keys() | fut_of.keys()
+    count = {"both": len(spots.keys() & fut_of.keys()), "spot": len(spots.keys() - fut_of.keys()),
+             "fut": len(fut_of.keys() - spots.keys()), "total": len(tokens)}
     pool = {}
     pool_at = 0.0
     day = {}
@@ -189,25 +199,29 @@ def board(argv):
             fb = {t["symbol"]: t for t in public(FAPI + "/fapi/v1/ticker/bookTicker") if t["symbol"] in perps}
             prem = {p["symbol"]: p for p in public(FAPI + "/fapi/v1/premiumIndex") if p["symbol"] in perps}
             rows = []
-            for sym in spots | perps:
-                s, f, p = sb.get(sym), fb.get(sym), prem.get(sym)
+            for sym in tokens:
+                fsym, mult = fut_of.get(sym, (None, 1))
+                s, f, p = sb.get(sym), fb.get(fsym), prem.get(fsym)
                 sd = day.get(("s", sym)) if sym in spots else None
-                fd = day.get(("f", sym)) if sym in perps else None
-                r = {"sym": sym, "cat": "both" if sym in spots and sym in perps else "spot" if sym in spots else "fut",
-                     "pool": pool.get(sym[:-4], Decimal(0)) > 0}
+                fd = day.get(("f", fsym)) if fsym else None
+                r = {"sym": sym, "cat": "both" if sym in spots and fsym else "spot" if sym in spots else "fut",
+                     "pool": pool.get(spots.get(sym) or perps[fsym], Decimal(0)) > 0}
+                if fsym and fsym != sym:
+                    r.update(fsym=fsym, mult=mult)
                 if s:
                     r.update(sbid=s["bidPrice"], sask=s["askPrice"], sbq=s["bidQty"], saq=s["askQty"])
                 if f:
                     r.update(fbid=f["bidPrice"], fask=f["askPrice"], fbq=f["bidQty"], faq=f["askQty"])
                 if p:
                     fund = Decimal(p["lastFundingRate"]) * 100
-                    r.update(fund=round(float(fund), 6), hours=hours.get(sym, 8),
-                             fday=round(float(fund * 24 / hours.get(sym, 8)), 4),
+                    r.update(fund=round(float(fund), 6), hours=hours.get(fsym, 8),
+                             fday=round(float(fund * 24 / hours.get(fsym, 8)), 4),
                              prem=round(float((Decimal(p["markPrice"]) - Decimal(p["indexPrice"]))
                                               / Decimal(p["indexPrice"]) * 100), 4))
                 if s and f and Decimal(s["askPrice"]) > 0 and Decimal(f["askPrice"]) > 0:
-                    r.update(ngap=round(float((Decimal(f["bidPrice"]) - Decimal(s["askPrice"])) / Decimal(s["askPrice"]) * 100), 4),
-                             rgap=round(float((Decimal(s["bidPrice"]) - Decimal(f["askPrice"])) / Decimal(f["askPrice"]) * 100), 4))
+                    fbid, fask = Decimal(f["bidPrice"]) / mult, Decimal(f["askPrice"]) / mult
+                    r.update(ngap=round(float((fbid - Decimal(s["askPrice"])) / Decimal(s["askPrice"]) * 100), 4),
+                             rgap=round(float((Decimal(s["bidPrice"]) - fask) / fask * 100), 4))
                 if sd:
                     r.update(svol=round(float(sd["quoteVolume"])), schg=float(sd["priceChangePercent"]), strades=sd["count"])
                 if fd:

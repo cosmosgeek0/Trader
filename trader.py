@@ -1,5 +1,6 @@
 import sys
 
+import account
 import basis
 import binance
 import market
@@ -8,6 +9,8 @@ action = sys.argv[1]
 
 if action == "state":
     binance.state()
+elif action == "account":
+    account.account()
 elif action == "orders":
     binance.orders()
 elif action == "spot":

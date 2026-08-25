@@ -1,0 +1,22 @@
+[Unit]
+Description=Trader logs
+After=network.target
+
+[Service]
+User=trader-data
+Group=trader-data
+SupplementaryGroups=systemd-journal
+StateDirectory=trader-logs
+StateDirectoryMode=0750
+UMask=0027
+RuntimeDirectory=trader-logs
+BindReadOnlyPaths=/home/ssm-user/Trader/server/logs.py:/run/trader-logs/logs.py
+ExecStart=/usr/bin/python3 /run/trader-logs/logs.py
+Restart=on-failure
+RestartSec=5
+ProtectHome=yes
+ProtectSystem=strict
+IPAddressDeny=169.254.169.254
+
+[Install]
+WantedBy=multi-user.target

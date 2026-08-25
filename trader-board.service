@@ -1,0 +1,16 @@
+[Unit]
+Description=Trader board
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ssm-user
+Group=trader-data
+WorkingDirectory=/var/lib/trader-board
+ExecStart=/usr/bin/python3 -u /home/ssm-user/Trader/trader.py board
+Restart=on-failure
+RestartSec=5
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

@@ -9,7 +9,7 @@
   var OPTIONS = {
     theme: [["system", "System"], ["light", "Light"], ["dark", "Dark"]],
     accent: [["red", "Red"], ["orange", "Orange"], ["yellow", "Yellow"], ["green", "Green"],
-      ["blue", "Blue"], ["indigo", "Indigo"], ["violet", "Violet"]],
+      ["blue", "Blue"], ["indigo", "Indigo"], ["violet", "Violet"], ["gray", "Gray"]],
     motion: [["system", "System"], ["full", "Full"], ["reduced", "Reduced"]],
     density: [["comfortable", "Comfortable"], ["compact", "Compact"]],
     font: [["inter", "Inter"], ["system", "System"]],
@@ -114,7 +114,7 @@
   var darkMql = window.matchMedia("(prefers-color-scheme: dark)");
   var motionMql = window.matchMedia("(prefers-reduced-motion: reduce)");
   var ACCENTS = { red: "#d94141", orange: "#e0812b", yellow: "#d9a52b", green: "#2e9e5b",
-    blue: "#2557d6", indigo: "#5b5bd6", violet: "#7c3aed" };
+    blue: "#2557d6", indigo: "#5b5bd6", violet: "#7c3aed", gray: "#5d5d5d" };
 
   function applyLook() {
     var root = document.documentElement;
@@ -208,16 +208,8 @@
   var pageEl = document.getElementById("page");
   var rows = document.querySelectorAll(".nav-row[data-page]");
   var PAGES = {
-    overview: "Empty by decision — sections arrive one at a time on your word.",
-    account: "Not built yet — it arrives when you order it.",
-    markets: "Not built yet — it arrives when you order it.",
-    basis: "Not built yet — it arrives when you order it.",
-    volume: "Not built yet — it arrives when you order it.",
-    machine: "Not built yet — it arrives when you order it.",
-    logs: "Not built yet — it arrives when you order it.",
-    news: "",
-    network: "",
-    settings: ""
+    overview: "", account: "", markets: "", basis: "", volume: "",
+    machine: "", logs: "", news: "", network: "", settings: ""
   };
 
   function route() {
@@ -236,6 +228,11 @@
     netRequest = null;
     netPlace = null;
     netHoverAt = null;
+    if (logsRequest) {
+      clearTimeout(logsRequest.timeout);
+      logsRequest.controller.abort();
+    }
+    logsRequest = null;
     pageEl.textContent = "";
     devices.clear();
     newsEl = null;
@@ -245,6 +242,37 @@
     netPlot = null;
     netMap = null;
     clearInterval(netTimer);
+    closeLogPop();
+    logsEl = null;
+    logsBar = null;
+    clearInterval(logsTimer);
+    if (acctRequest) {
+      clearTimeout(acctRequest.timeout);
+      acctRequest.controller.abort();
+    }
+    acctRequest = null;
+    acctEl = null;
+    acctBar = null;
+    acctPaint = null;
+    acctSide = null;
+    acctSection = null;
+    lawSection = null;
+    lawModeSeg = null;
+    lawQueue = [];
+    rulesError = "";
+    closeLawPop();
+    closeReceipt();
+    clearInterval(acctTimer);
+    if (marketsRequest) {
+      clearTimeout(marketsRequest.timeout);
+      marketsRequest.controller.abort();
+    }
+    marketsRequest = null;
+    marketsEl = null;
+    marketsBar = null;
+    marketsPaint = null;
+    marketsSide = null;
+    clearInterval(marketsTimer);
     var page = document.createElement("div");
     page.className = "page-shell";
     var head = document.createElement("div");
@@ -253,17 +281,40 @@
     ttl.textContent = h.charAt(0).toUpperCase() + h.slice(1);
     head.appendChild(ttl);
     page.appendChild(head);
-    if (PAGES[h]) {
-      var sub = document.createElement("div");
-      sub.className = "page-sub";
-      sub.textContent = PAGES[h];
-      page.appendChild(sub);
-    }
     pageEl.appendChild(page);
-    if (h === "settings") { buildSettings(page, head); }
+    if (h === "overview") {
+      buildStub(page, "overview", [["all", "All"]], ["#", "Section", "Detail", "Value"]);
+    } else if (h === "machine") {
+      buildStub(page, "machine", [["all", "All"], ["bnorm", "Basis"], ["brev", "Reverse"], ["spread", "Volume"]],
+        ["#", "Strategy", "State", "Detail", "Value"]);
+    } else if (h === "basis") {
+      buildStub(page, "basis", [["all", "All"], ["bnorm", "Normal"], ["brev", "Reverse"]],
+        ["#", "Token", "Price", "Basis", "Reverse", "Funding"]);
+    } else if (h === "volume") {
+      buildStub(page, "volume", [["all", "All"], ["spot", "Spot only"], ["fut", "Futures only"]],
+        ["#", "Token", "Price", "Volume 24h", "Vol 1h"]);
+    } else if (h === "settings") { buildSettings(page, head); }
     else if (h === "news") { buildNews(page, head); }
     else if (h === "network") { buildNetwork(page, head); }
+    else if (h === "logs") { buildLogs(page, head); }
+    else if (h === "account") { buildAccount(page, head); }
+    else if (h === "markets") { buildMarkets(page, head); }
     closePop();
+  }
+
+  function buildStub(page, name, pillDefs, cols) {
+    page.classList.add(name);
+    var bar = page.appendChild(el("div", "news-pills"));
+    pillDefs.forEach(function (p, i) {
+      var b = el("button", "news-pill" + (i ? "" : " on"));
+      b.appendChild(icon(p[0]));
+      b.appendChild(document.createTextNode(p[1]));
+      bar.appendChild(b);
+    });
+    var list = page.appendChild(el("div", "news-list"));
+    var head = el("div", "news-head-row");
+    cols.forEach(function (c) { head.appendChild(el("span", "", c)); });
+    list.appendChild(head);
   }
 
   function selectOne(btn) {
@@ -403,6 +454,7 @@
       apply(settings.sidebar);
       if (location.hash) { route(); } else { location.hash = "settings"; }
     }));
+    page.classList.add("settings");
     var tabs = document.createElement("div");
     tabs.className = "set-tabs";
     var body = document.createElement("div");
@@ -410,7 +462,13 @@
       var n = pair[0];
       var tb = document.createElement("button");
       tb.className = "set-tab" + (n === settings.tab ? " on" : "");
-      tb.textContent = n;
+      var mark = n === "Devices"
+        ? document.querySelector('#sess-icons svg[data-d="monitor"]').cloneNode(true)
+        : n === "Notifications" ? icon("bell")
+          : document.querySelector('.nav-row[data-page="settings"] svg').cloneNode(true);
+      mark.setAttribute("class", "");
+      tb.appendChild(mark);
+      tb.appendChild(document.createTextNode(n));
       tb.addEventListener("click", function () {
         settings.tab = n;
         saveSettings();
@@ -426,17 +484,18 @@
     function row(rows, title, subText, control) {
       var r = document.createElement("div");
       r.className = "set-row";
-      var col = document.createElement("div");
-      col.className = "set-col";
+      var rank = document.createElement("span");
+      rank.className = "set-rank";
+      rank.textContent = String(rows.childElementCount);
+      r.appendChild(rank);
       var t = document.createElement("div");
       t.className = "set-title";
       t.textContent = title;
-      col.appendChild(t);
+      r.appendChild(t);
       var su = document.createElement("div");
       su.className = "set-sub";
       su.textContent = subText;
-      col.appendChild(su);
-      r.appendChild(col);
+      r.appendChild(su);
       if (control.getAttribute("role") === "switch") { control.setAttribute("aria-label", title); }
       r.appendChild(control);
       rows.appendChild(r);
@@ -513,7 +572,7 @@
       if (settings.tab !== "Devices") {
         var hr = document.createElement("div");
         hr.className = "set-head-row";
-        ["Setting", "Value"].forEach(function (text) {
+        ["#", "Setting", "Detail", "Value"].forEach(function (text) {
           var c = document.createElement("span");
           c.textContent = text;
           hr.appendChild(c);
@@ -639,6 +698,8 @@
   var CATEGORY_COLOR = { Crypto: "#3b82f6", Macro: "#8b5cf6", Markets: "#10b981", Regulation: "#f59e0b",
     Exchange: "#06b6d4", "On-Chain": "#ec4899", Security: "#ef4444" };
   var NEWS_CATS = Object.keys(CATEGORY_COLOR);
+  var NEWS_CAT_ICON = { all: "all", Crypto: "spot", Macro: "globe", Markets: "bnorm",
+    Regulation: "scales", Exchange: "spread", "On-Chain": "chain", Security: "shield" };
 
   function el(tag, cls, text) {
     var out = document.createElement(tag);
@@ -751,8 +812,6 @@
       input.value = v;
       clear.hidden = !v;
       change(v);
-      if (name === "news") { newsPage = 1; }
-      drawNews();
     }
     input.addEventListener("input", function () { set(input.value); });
     input.addEventListener("keydown", function (ev) {
@@ -770,6 +829,31 @@
     head.appendChild(el("b", "", title));
     if (sub) { head.appendChild(el("span", "", sub)); }
     out.appendChild(head);
+    return out;
+  }
+
+  function pager(total, page, go, size) {
+    var per = size || NEWS_PAGE_SIZE;
+    var pages = Math.max(1, Math.ceil(total / per));
+    var out = el("div", "dev-pages");
+    function pageButton(label, to, on) {
+      var b = el("button", "dev-page" + (on ? " on" : ""), label);
+      if (to < 1 || to > pages) { b.disabled = true; }
+      else { b.addEventListener("click", function () { go(to); }); }
+      out.appendChild(b);
+    }
+    pageButton("‹", page - 1);
+    var from = Math.max(1, Math.min(page - 2, pages - 4));
+    var to = Math.min(pages, from + 4);
+    if (from > 1) { pageButton("1", 1); }
+    if (from > 2) { out.appendChild(el("span", "news-page-gap", "…")); }
+    for (var p = from; p <= to; p++) { pageButton(String(p), p, p === page); }
+    if (to < pages - 1) { out.appendChild(el("span", "news-page-gap", "…")); }
+    if (to < pages) { pageButton(String(pages), pages); }
+    pageButton("›", page + 1);
+    var start = (page - 1) * per;
+    out.appendChild(el("span", "news-page-info",
+      (start + 1) + "–" + Math.min(start + per, total) + " of " + total));
     return out;
   }
 
@@ -794,6 +878,13 @@
     return out;
   }
 
+  function topOfHour() {
+    var now = new Date();
+    var clock = new Intl.DateTimeFormat("en-US", { timeZone: settings.tz, minute: "numeric", second: "numeric" })
+      .format(now).split(":").map(Number);
+    return Math.floor(now.getTime() / 1000) - clock[0] * 60 - clock[1];
+  }
+
   function activityBox(pool, top) {
     var out = box("Activity · 24h", "by category");
     var buckets = [];
@@ -806,11 +897,12 @@
     var max = Math.max.apply(null, buckets.map(total)) || 1;
     var chart = svg("svg", { viewBox: "0 0 356 118", "class": "news-chart" });
     var slot = 356 / 24;
+    chart.appendChild(svg("text", { x: 0, y: 9 })).textContent = String(max);
     buckets.forEach(function (b, x) {
       var y = 98;
       NEWS_CATS.forEach(function (c) {
         if (!b[c]) { return; }
-        var h = Math.max(2, b[c] / max * 88);
+        var h = Math.max(2, b[c] / max * 84);
         y -= h;
         chart.appendChild(svg("rect", { x: x * slot + 1.5, y: y, width: slot - 3, height: Math.max(1, h - 1),
           rx: 1.5, fill: CATEGORY_COLOR[c] }));
@@ -836,7 +928,7 @@
     var rows = newsData.sources;
     var live = rows.filter(function (s) { return s.status === "live"; }).length;
     var out = box("Sources", rows.length + " · " + live + " live");
-    out.appendChild(searchBox("sources", "Search sources", newsSourceQuery, function (v) { newsSourceQuery = v; }));
+    out.appendChild(searchBox("sources", "Search sources", newsSourceQuery, function (v) { newsSourceQuery = v; drawNews(); }));
     var list = el("div", "news-source-list");
     var q = newsSourceQuery.trim().toLowerCase();
     var rank = { live: 2, delayed: 1, error: 0 };
@@ -881,10 +973,7 @@
       newsEl.appendChild(el("div", "news-empty", "No news yet."));
       return;
     }
-    var now = new Date();
-    var clockNow = new Intl.DateTimeFormat("en-US", { timeZone: settings.tz, minute: "numeric", second: "numeric" })
-      .format(now).split(":").map(Number);
-    var hourStart = Math.floor(now.getTime() / 1000) - clockNow[0] * 60 - clockNow[1];
+    var hourStart = topOfHour();
     var q = newsQuery.trim().toLowerCase();
     var perCat = {};
     var items = newsData.items.filter(function (it) {
@@ -899,11 +988,11 @@
 
     var bar = newsBar;
     bar.textContent = "";
-    [["all", "All News", items.length]].concat(NEWS_CATS.map(function (c) { return [c, c, perCat[c] || 0]; }))
+    [["all", "All News"]].concat(NEWS_CATS.map(function (c) { return [c, c]; }))
       .forEach(function (def) {
         var b = el("button", "news-pill" + (newsCat === def[0] ? " on" : ""));
+        b.appendChild(icon(NEWS_CAT_ICON[def[0]] || "all"));
         b.appendChild(document.createTextNode(def[1]));
-        b.appendChild(el("span", "news-count", String(def[2])));
         b.addEventListener("click", function () { newsCat = def[0]; newsPage = 1; drawNews(); });
         bar.appendChild(b);
       });
@@ -933,39 +1022,26 @@
       list.appendChild(row);
     });
     main.appendChild(list);
-    var pager = el("div", "dev-pages");
-    function pageButton(label, page, on) {
-      var b = el("button", "dev-page" + (on ? " on" : ""), label);
-      if (page < 1 || page > pages) { b.disabled = true; }
-      else { b.addEventListener("click", function () { newsPage = page; drawNews(); }); }
-      pager.appendChild(b);
-    }
     if (!shown.length) {
       main.appendChild(el("div", "news-empty", "Nothing matches these filters."));
     } else {
-      pageButton("‹", newsPage - 1);
-      var from = Math.max(1, Math.min(newsPage - 2, pages - 4));
-      var to = Math.min(pages, from + 4);
-      if (from > 1) { pageButton("1", 1); }
-      if (from > 2) { pager.appendChild(el("span", "news-page-gap", "…")); }
-      for (var p = from; p <= to; p++) { pageButton(String(p), p, p === newsPage); }
-      if (to < pages - 1) { pager.appendChild(el("span", "news-page-gap", "…")); }
-      if (to < pages) { pageButton(String(pages), pages); }
-      pageButton("›", newsPage + 1);
-      pager.appendChild(el("span", "news-page-info",
-        (start + 1) + "–" + Math.min(start + NEWS_PAGE_SIZE, shown.length) + " of " + shown.length));
-      main.appendChild(pager);
+      main.appendChild(pager(shown.length, newsPage, function (p) { newsPage = p; drawNews(); }));
     }
     cols.appendChild(main);
 
     var side = el("div", "news-side");
-    side.appendChild(sourcesBox());
-    side.appendChild(activityBox(shown, hourStart));
+    function chip(name, boxEl) {
+      var b = boxEl.querySelector(".news-box-head b");
+      b.insertBefore(icon(name), b.firstChild);
+      return boxEl;
+    }
+    side.appendChild(chip("both", sourcesBox()));
+    side.appendChild(chip("change", activityBox(shown, hourStart)));
     var top = tally(shown, "source").slice(0, 8);
     var shades = {};
     top.forEach(function (p, i) { shades[p[0]] = "rgba(100, 116, 139, " + (1 - i * 0.09).toFixed(2) + ")"; });
-    side.appendChild(barsBox("Top sources", top, shades));
-    side.appendChild(barsBox("Categories", tally(shown, "category"), CATEGORY_COLOR));
+    side.appendChild(chip("bnorm", barsBox("Top sources", top, shades)));
+    side.appendChild(chip("breadth", barsBox("Categories", tally(shown, "category"), CATEGORY_COLOR)));
     cols.appendChild(side);
     newsEl.appendChild(cols);
     newsEl.querySelector(".news-source-list").scrollTop = scrolled;
@@ -979,7 +1055,11 @@
 
   function buildNews(page, head) {
     var acts = el("div", "set-actions news-acts");
-    acts.appendChild(searchBox("news", "Search news…", newsQuery, function (v) { newsQuery = v; }));
+    acts.appendChild(searchBox("news", "Search news…", newsQuery, function (v) {
+      newsQuery = v;
+      newsPage = 1;
+      drawNews();
+    }));
     acts.appendChild(refreshButton(fetchNews));
     newsSwitch = el("button", "set-switch");
     newsSwitch.setAttribute("role", "switch");
@@ -989,14 +1069,1969 @@
     var live = acts.appendChild(el("span", "status"));
     newsDot = live.appendChild(el("i", "status-dot"));
     newsAge = live.appendChild(el("span"));
-    var toolbar = page.appendChild(el("div", "news-toolbar"));
-    newsBar = toolbar.appendChild(el("div", "news-pills"));
-    toolbar.appendChild(acts);
+    page.classList.add("news");
+    head.appendChild(acts);
+    newsBar = page.appendChild(el("div", "news-pills"));
     newsEl = page.appendChild(el("div", "news"));
     drawSwitch();
     if (newsData) { drawNews(); }
     newsState();
     newsTimer = setInterval(newsState, 60000);
+  }
+
+  /* ---- account: the feed's one file, three wallets in one table ---- */
+  var acctData = null;
+  var acctOk = true;
+  var acctEl = null;
+  var acctBar = null;
+  var acctDot = null;
+  var acctAge = null;
+  var acctTimer = null;
+  var acctRequest = null;
+  var acctWallet = "all";
+  var acctPaint = null;
+  var acctSide = null;
+  var acctSort = { key: "value", dir: -1 };
+  var ACCT_WALLETS = [["spot", "Spot"], ["margin", "Margin"], ["fut", "Futures"],
+    ["earn", "Earn"], ["funding", "Funding"], ["loan", "Loans"]];
+  var ACCT_ICON = { all: "all", spot: "spot", margin: "scales", fut: "fut",
+    earn: "funding", funding: "spread", loan: "chain", convert: "spread" };
+  var ORD_TABS = [["all", "Overview"], ["spot", "Spot"], ["fut", "Futures"],
+    ["margin", "Margin"], ["convert", "Convert"]];
+  var acctOrdTab = "all";
+  var acctOrdPage = 1;
+  var acctOrdSeen = null;
+  var ACCT_LABEL = {};
+  ACCT_WALLETS.forEach(function (w) { ACCT_LABEL[w[0]] = w[1]; });
+  var ACCT_COLOR = { "Spot": "#3b82f6", "Margin": "#8b5cf6", "Futures": "#d9a52b",
+    "Earn": "#2ebd85", "Funding": "#ec4899", "Loans": "#22b8cf" };
+  var ACCT_COLS = [["asset", "Asset"], ["wallet", "Category"], ["amount", "Amount"],
+    ["value", "Value"], ["pnl", "PnL"]];
+  var ORD_STATUS = { FILLED: "Filled", PARTIALLY_FILLED: "Partial", CANCELED: "Canceled",
+    EXPIRED: "Expired", NEW: "Open", Completed: "Done", Success: "Done", Confirmed: "Done" };
+
+  function ordStatus(s) { return ORD_STATUS[s] || s; }
+
+  function fmtMoney(v) {
+    var sign = v < 0 ? "-" : "";
+    var s = Math.abs(v).toFixed(2);
+    var parts = s.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return sign + "$" + parts.join(".");
+  }
+
+  function fmtQty(v) {
+    if (v === 0) { return "0"; }
+    var s = Math.abs(v) >= 1 ? v.toFixed(4) : v.toFixed(8);
+    return s.replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function acctRows() {
+    var rows = acctData.rows.map(function (r) { return r; });
+    acctData.positions.forEach(function (p) {
+      rows.push({ wallet: "fut", asset: p.symbol, position: true, leverage: p.leverage,
+        amount: p.amount, entry: p.entry, pnl: p.pnl, value: null });
+    });
+    return rows.filter(function (r) { return acctWallet === "all" || r.wallet === acctWallet; });
+  }
+
+  function acctValue(r, key) {
+    if (key === "asset") { return r.asset; }
+    var v = r[key];
+    return v === undefined || v === null ? null : v;
+  }
+
+  var acctOn = true;
+
+  function fetchAcct(force) {
+    if (!acctEl || acctRequest || !acctOn) { return; }
+    if (force !== true && document.hidden) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    acctRequest = request;
+    fetch("/account.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (acctRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        acctRequest = null;
+        if (!acctEl) { return; }
+        acctOk = true;
+        if (acctData && acctData.at === d.at) { drawAcctStatus(); return; }
+        acctData = d;
+        paintAcct();
+      }).catch(function () {
+        if (acctRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        acctRequest = null;
+        if (!acctEl) { return; }
+        acctOk = false;
+        if (acctData) { drawAcctStatus(); } else { drawAcct(); }
+      });
+  }
+
+  function drawAcctStatus() {
+    if (!acctEl) { return; }
+    if (!acctOn) {
+      acctDot.className = "status-dot";
+      acctAge.textContent = "Off";
+      return;
+    }
+    var stale = !acctData || Date.now() - acctData.at > acctData.every * 3000;
+    acctDot.className = "status-dot " + (!acctOk ? "dead" : !acctData ? "" : stale ? "stale" : "live");
+    acctAge.textContent = !acctOk ? "Offline" : !acctData ? "" : stale ? "Stale" : "Live";
+  }
+
+  function acctDonut(pairs, colors, label) {
+    var share = el("div", "logs-share");
+    var donut = svg("svg", { viewBox: "0 0 120 120", "class": "logs-donut", role: "img", "aria-label": label });
+    donut.appendChild(svg("circle", { cx: 60, cy: 60, r: 44, fill: "none",
+      stroke: "var(--hover)", "stroke-width": 16 }));
+    var total = 0;
+    pairs.forEach(function (p) { total += Math.max(p[1], 0); });
+    var C = 2 * Math.PI * 44;
+    var run = 0;
+    pairs.forEach(function (p) {
+      var slice = Math.max(p[1], 0);
+      if (!slice || !total) { return; }
+      var arc = svg("circle", { cx: 60, cy: 60, r: 44, fill: "none", stroke: colors[p[0]] || "var(--faint)",
+        "stroke-width": 16, "stroke-dasharray": (slice / total * C).toFixed(2) + " " + C.toFixed(2),
+        "stroke-dashoffset": (-run / total * C).toFixed(2), transform: "rotate(-90 60 60)" });
+      arc.setAttribute("data-tip", p[0] + " · " + fmtMoney(p[1])
+        + " (" + Math.round(slice / total * 100) + "%)");
+      donut.appendChild(arc);
+      run += slice;
+    });
+    share.appendChild(donut);
+    var legend = el("div", "logs-share-rows");
+    pairs.forEach(function (p) {
+      var row = el("div", "news-hbar");
+      var dot = el("span", "net-chip-dot");
+      dot.style.background = colors[p[0]] || "var(--faint)";
+      row.appendChild(dot);
+      row.appendChild(el("span", "news-hbar-label", p[0]));
+      row.appendChild(el("span", "news-hbar-value", fmtMoney(p[1])));
+      legend.appendChild(row);
+    });
+    share.appendChild(legend);
+    return share;
+  }
+
+  function acctMeter(frac, tone) {
+    var meter = el("span", "acct-meter");
+    var fill = meter.appendChild(el("i", "acct-meter-fill"));
+    fill.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + "%";
+    fill.style.background = tone;
+    return meter;
+  }
+
+  function acctStat(box, label, text) {
+    var row = el("div", "news-source-row");
+    row.appendChild(el("span", "news-source-name", label));
+    row.appendChild(el("span", "news-count", text));
+    box.appendChild(row);
+    return row;
+  }
+
+  function acctKey(r) {
+    return (r.position ? "p|" : r.wallet + "|") + r.asset + "|"
+      + (r.collateral ? "c" : r.ltv !== undefined ? "l" : r.earn ? "e" + r.earn
+        : r.borrowed ? "b" : r.locked ? "k" : "-");
+  }
+
+  function acctSub(r) {
+    if (r.position) {
+      return (r.amount > 0 ? "long" : "short") + " · " + r.leverage + "× · entry " + r.entry;
+    }
+    if (r.borrowed) { return "borrowed " + fmtQty(r.borrowed) + " · interest " + fmtQty(r.interest); }
+    if (r.ltv !== undefined) { return "flexible loan · LTV " + r.ltv.toFixed(2); }
+    if (r.collateral) { return "loan collateral"; }
+    if (r.locked) { return "locked " + fmtQty(r.locked); }
+    return null;
+  }
+
+  function acctSorted() {
+    var rows = acctRows();
+    rows.sort(function (a, b) {
+      var va = acctValue(a, acctSort.key);
+      var vb = acctValue(b, acctSort.key);
+      if (va === null && vb === null) { return a.asset < b.asset ? -1 : 1; }
+      if (va === null) { return 1; }
+      if (vb === null) { return -1; }
+      if (va < vb) { return -acctSort.dir; }
+      if (va > vb) { return acctSort.dir; }
+      return a.asset < b.asset ? -1 : 1;
+    });
+    return rows;
+  }
+
+  function acctChip(name, boxEl) {
+    var b = boxEl.querySelector(".news-box-head b");
+    b.insertBefore(icon(name), b.firstChild);
+    return boxEl;
+  }
+
+  function acctRail() {
+    var side = el("div", "news-side");
+    var series = acctData.series || [];
+    if (series.length > 1) {
+      var hist = acctChip("change", box("Balance · 24h", fmtMoney(acctData.total)));
+      var chart = svg("svg", { viewBox: "0 0 356 108", "class": "news-chart",
+        role: "img", "aria-label": "Total value over 24 hours" });
+      var lo = Infinity;
+      var hi = -Infinity;
+      series.forEach(function (s) {
+        if (s[1] < lo) { lo = s[1]; }
+        if (s[1] > hi) { hi = s[1]; }
+      });
+      var pad = Math.max((hi - lo) * 0.1, 0.5);
+      lo -= pad;
+      hi += pad;
+      var t0 = series[0][0];
+      var span = Math.max(series[series.length - 1][0] - t0, 1);
+      var pts = series.map(function (s) {
+        return ((s[0] - t0) / span * 356).toFixed(1) + ","
+          + (88 - (s[1] - lo) / (hi - lo) * 74).toFixed(1);
+      });
+      chart.appendChild(svg("text", { x: 0, y: 8 })).textContent = fmtMoney(hi - pad);
+      chart.appendChild(svg("polyline", { points: pts.join(" "), fill: "none",
+        stroke: "var(--focus)", "stroke-width": 2, "stroke-linejoin": "round",
+        "stroke-linecap": "round" }));
+      chart.appendChild(svg("polygon", { points: "0,88 " + pts.join(" ") + " 356,88",
+        fill: "var(--focus)", "fill-opacity": 0.08, stroke: "none" }));
+      chart.appendChild(svg("line", { x1: 0, y1: 88.5, x2: 356, y2: 88.5, "class": "news-chart-base" }));
+      var hit = svg("rect", { x: 0, y: 0, width: 356, height: 108, fill: "transparent" });
+      hit.setAttribute("data-tip", "Low " + fmtMoney(lo + pad) + " · high " + fmtMoney(hi - pad)
+        + " · " + series.length + " samples");
+      chart.appendChild(hit);
+      hist.appendChild(chart);
+      side.appendChild(hist);
+    }
+    var balance = acctChip("breadth", box("Balance · by wallet", fmtMoney(acctData.total) + " total"));
+    balance.appendChild(acctDonut(ACCT_WALLETS.map(function (w) {
+      return [w[1], acctData.wallets[w[0]] || 0];
+    }), ACCT_COLOR, "Balance by wallet"));
+    var today = el("div", "news-hbar");
+    today.appendChild(el("span", "news-hbar-label", "Today"));
+    if (acctData.day.seeded) {
+      today.appendChild(el("span", "news-hbar-value", "—"));
+      today.setAttribute("data-tip", "First full day starts at 00:00 UTC");
+    } else {
+      var dayDiff = acctData.total - acctData.day.total;
+      var dayCell = el("span", "news-hbar-value", (dayDiff >= 0 ? "+" : "") + fmtMoney(dayDiff));
+      dayCell.className += dayDiff > 0 ? " up" : dayDiff < 0 ? " down" : "";
+      today.appendChild(dayCell);
+      today.setAttribute("data-tip", "Since 00:00 UTC · anchor " + fmtMoney(acctData.day.total));
+    }
+    balance.appendChild(today);
+    if (lawRules()) {
+      var m = lawRules().machine;
+      var seesRow = el("div", "news-hbar");
+      seesRow.appendChild(el("span", "news-hbar-label", "Machine sees"));
+      seesRow.appendChild(el("span", "news-hbar-value",
+        fmtMoney(Math.max(0, m.lifetime_usdt - m.used_usdt))));
+      seesRow.setAttribute("data-tip", "Lifetime allowance " + fmtMoneyExact(m.lifetime_usdt)
+        + " minus used " + fmtMoneyExact(m.used_usdt));
+      balance.appendChild(seesRow);
+    }
+    side.appendChild(balance);
+
+    var byAsset = {};
+    acctData.rows.forEach(function (r) {
+      if (r.value > 0) { byAsset[r.asset] = (byAsset[r.asset] || 0) + r.value; }
+    });
+    var assetPairs = Object.keys(byAsset).map(function (k) { return [k, byAsset[k]]; })
+      .sort(function (a, b) { return b[1] - a[1]; });
+    var top = assetPairs.slice(0, 4);
+    var rest = assetPairs.slice(4).reduce(function (n, p) { return n + p[1]; }, 0);
+    if (rest > 0) { top.push(["Other", rest]); }
+    var assetColors = {};
+    var palette = ["#3b82f6", "#2ebd85", "#8b5cf6", "#d9a52b", "#22b8cf"];
+    top.forEach(function (p, i) { assetColors[p[0]] = palette[i % palette.length]; });
+    var alloc = acctChip("spot", box("Allocation · by asset", assetPairs.length + " assets"));
+    alloc.appendChild(acctDonut(top, assetColors, "Allocation by asset"));
+    side.appendChild(alloc);
+
+    var expo = acctChip("fut", box("Exposure"));
+    var used = acctData.futures.margin_balance > 0
+      ? acctData.futures.maintenance / acctData.futures.margin_balance : 0;
+    var em = el("div", "news-hbar");
+    em.appendChild(el("span", "news-hbar-label", "Futures margin"));
+    em.appendChild(acctMeter(used, "var(--focus)"));
+    em.setAttribute("data-tip", "Maintenance " + fmtMoney(acctData.futures.maintenance)
+      + " of " + fmtMoney(acctData.futures.margin_balance) + " margin balance");
+    expo.appendChild(em);
+    acctStat(expo, "Open positions", String(acctData.positions.length));
+    acctStat(expo, "Borrowed", fmtMoney(acctData.margin.borrowed));
+    if (acctData.margin.borrowed > 0) {
+      acctStat(expo, "Margin level", acctData.margin.level >= 999 ? "∞"
+        : acctData.margin.level.toFixed(2));
+    }
+    var upnl = acctData.futures.pnl;
+    var upnlRow = acctStat(expo, "Unrealized PnL", (upnl >= 0 ? "+" : "") + fmtMoney(upnl));
+    upnlRow.lastChild.className += upnl > 0 ? " up" : upnl < 0 ? " down" : "";
+    side.appendChild(expo);
+    return side;
+  }
+
+  function acctOrders() {
+
+    var orders = acctData ? acctData.orders || [] : [];
+    var past = acctData ? acctData.history || [] : [];
+    var section = el("div", "acct-section");
+    var obar = section.appendChild(el("div", "news-pills"));
+    var mixed = [];
+    orders.forEach(function (o) {
+      mixed.push({ ts: o.ts, venue: o.venue, kind: "order",
+        type: (ACCT_LABEL[o.venue] || o.venue) + " " + o.side,
+        symbol: o.symbol, otype: o.type.toLowerCase(), price: o.price,
+        qty: o.qty, filled: o.filled,
+        detail: o.symbol + " " + o.type.toLowerCase()
+          + (parseFloat(o.price) > 0 ? " @ " + o.price : "")
+          + (parseFloat(o.filled) > 0 ? " · filled " + o.filled : ""),
+        amount: parseFloat(o.filled) > 0 ? o.filled : o.qty, status: o.status });
+    });
+    past.forEach(function (r) {
+      if (r.kind === "order") {
+        mixed.push({ ts: r.ts, venue: r.venue, kind: "order",
+          type: (ACCT_LABEL[r.venue] || r.venue) + " " + r.side,
+          symbol: r.symbol, otype: r.otype.toLowerCase(),
+          price: parseFloat(r.price) > 0 ? parseFloat(r.price).toPrecision(6) : "",
+          qty: r.qty, filled: r.filled,
+          detail: r.symbol + " " + r.otype.toLowerCase()
+            + (parseFloat(r.price) > 0 ? " @ " + parseFloat(r.price).toPrecision(6) : "")
+            + (parseFloat(r.filled) > 0 ? " · filled " + r.filled : ""),
+          amount: parseFloat(r.filled) > 0 ? r.filled : r.qty, status: r.status });
+        return;
+      }
+      mixed.push({ ts: r.ts, venue: null, kind: r.kind,
+        type: r.kind.charAt(0).toUpperCase() + r.kind.slice(1),
+        detail: r.detail || "—",
+        amount: fmtQty(r.amount) + " " + r.asset, status: r.status });
+    });
+    mixed.sort(function (a, b) { return b.ts - a.ts; });
+    var shownOrd = mixed.filter(function (m) {
+      if (acctOrdTab === "all") { return true; }
+      if (acctOrdTab === "convert") { return m.kind === "convert"; }
+      return m.kind === "order" && m.venue === acctOrdTab;
+    });
+    ORD_TABS.forEach(function (tab) {
+      var n = tab[0] === "all" ? mixed.length
+        : tab[0] === "convert" ? mixed.filter(function (m) { return m.kind === "convert"; }).length
+          : mixed.filter(function (m) { return m.kind === "order" && m.venue === tab[0]; }).length;
+      var b = el("button", "news-pill" + (acctOrdTab === tab[0] ? " on" : ""));
+      b.appendChild(icon(ACCT_ICON[tab[0]] || "all"));
+      b.appendChild(document.createTextNode(tab[1]));
+      b.addEventListener("click", function () {
+        acctOrdTab = tab[0];
+        acctOrdPage = 1;
+        acctOrdSeen = null;
+        drawTrans();
+      });
+      obar.appendChild(b);
+    });
+    var olist = el("div", "news-list");
+    var ohead = el("div", "ord-row news-head-row");
+    ["Time", "Detail", "Amount", "Status", "Receipt"].forEach(function (c) {
+      ohead.appendChild(el("span", "", c));
+    });
+    olist.appendChild(ohead);
+    var known = acctOrdSeen !== null;
+    if (!known) { acctOrdSeen = {}; }
+    var freshKeys = {};
+    shownOrd.forEach(function (m) {
+      var key = m.ts + "|" + m.detail + "|" + m.amount;
+      if (known && !acctOrdSeen[key]) { freshKeys[key] = true; }
+      acctOrdSeen[key] = true;
+    });
+    var fresh = Object.keys(freshKeys).length > 0;
+    if (fresh) { acctOrdPage = 1; }
+    var opages = Math.max(1, Math.ceil(shownOrd.length / 20));
+    acctOrdPage = Math.min(acctOrdPage, opages);
+    var ostart = (acctOrdPage - 1) * 20;
+    shownOrd.slice(ostart, ostart + 20).forEach(function (m) {
+      var row = el("div", "ord-row"
+        + (freshKeys[m.ts + "|" + m.detail + "|" + m.amount] ? " ord-new" : ""));
+      var when = new Date(m.ts * 1000);
+      row.appendChild(el("span", "news-time", dateFmt.format(when) + " " + timeFmt.format(when)));
+      var detail = el("span", "logs-msg", m.detail);
+      detail.title = m.detail;
+      row.appendChild(detail);
+      row.appendChild(el("span", "mkt-num", m.amount));
+      var ok = m.status === "FILLED" || m.status === "Completed" || m.status === "Success";
+      var bad = m.status === "CANCELED" || m.status === "EXPIRED";
+      row.appendChild(el("span", "mkt-num" + (ok ? " up" : bad ? " down" : ""), ordStatus(m.status)));
+      var open = row.appendChild(el("span", "news-open"));
+      var slip = svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+        "stroke-width": "1.6", "stroke-linecap": "round", "stroke-linejoin": "round" });
+      slip.appendChild(svg("path", {
+        d: "M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" }));
+      slip.appendChild(svg("path", { d: "M14 8H8" }));
+      slip.appendChild(svg("path", { d: "M16 12H8" }));
+      slip.appendChild(svg("path", { d: "M13 16H8" }));
+      open.appendChild(slip);
+      row.addEventListener("click", function () { openReceipt(m); });
+      olist.appendChild(row);
+    });
+    section.appendChild(olist);
+    if (!shownOrd.length) {
+      section.appendChild(el("div", "news-empty", "Nothing here yet."));
+    } else {
+      section.appendChild(pager(shownOrd.length, acctOrdPage, function (pg) {
+        acctOrdPage = pg;
+        drawTrans();
+      }, 20));
+    }
+    return section;
+  }
+
+  function drawTrans() {
+    if (!acctEl || !acctSection) { return; }
+    var next = acctOrders();
+    acctSection.replaceWith(next);
+    acctSection = next;
+  }
+
+  var transPop = null;
+
+  function closeReceipt() {
+    if (!transPop) { return; }
+    document.removeEventListener("keydown", transPop.onKey);
+    transPop.dim.remove();
+    transPop.card.remove();
+    transPop = null;
+  }
+
+  function openReceipt(m) {
+    closeReceipt();
+    var dim = el("div", "qsearch-dim");
+    var card = el("div", "logs-pop");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "Transaction receipt");
+    var head = el("div", "logs-pop-head");
+    var col = head.appendChild(el("span", "news-source-col"));
+    col.appendChild(el("span", "news-source-name", m.type));
+    if (m.symbol) { col.appendChild(el("span", "news-domain", m.symbol)); }
+    var ok = m.status === "FILLED" || m.status === "Completed" || m.status === "Success"
+      || m.status === "Confirmed";
+    var bad = m.status === "CANCELED" || m.status === "EXPIRED";
+    head.appendChild(el("span", "logs-pop-time"))
+      .appendChild(el("span", "mkt-num" + (ok ? " up" : bad ? " down" : ""), ordStatus(m.status)));
+    card.appendChild(head);
+    var when = new Date(m.ts * 1000);
+    [["Time", dateFmt.format(when) + " " + hoverTimeFmt.format(when)],
+     ["Order", m.otype], ["Price", m.price], ["Quantity", m.qty], ["Filled", m.filled],
+     ["Detail", m.detail]].forEach(function (p) {
+      if (p[1]) { acctStat(card, p[0], String(p[1])); }
+    });
+    dim.addEventListener("mousedown", closeReceipt);
+    var onKey = function (ev) { if (ev.key === "Escape") { closeReceipt(); } };
+    document.addEventListener("keydown", onKey);
+    transPop = { dim: dim, card: card, onKey: onKey };
+    document.body.appendChild(dim);
+    document.body.appendChild(card);
+  }
+
+  /* ---- controls: the money law — one file on the server, edited here,
+     every row badged with the layer that really enforces it ---- */
+  var rulesData = null;
+  var rulesOk = true;
+  var rulesBusy = false;
+  var rulesError = "";
+  var lawSection = null;
+  var lawPopEl = null;
+  var acctSection = null;
+  function lawClone(value) { return JSON.parse(JSON.stringify(value)); }
+
+  function lawRules() { return rulesData && rulesData.rules; }
+
+  var rulesFetching = false;
+  var rulesStale = false;
+  var rulesGen = 0;
+
+  function fetchRules() {
+    rulesFetching = true;
+    var gen = ++rulesGen;
+    fetch("/api/rules", { headers: { "X-Requested-With": "XMLHttpRequest" } }).then(function (r) {
+      if (r.status === 401) { location.reload(); }
+      if (!r.ok) { throw new Error(r.status); }
+      return r.json();
+    }).then(function (d) {
+      if (gen !== rulesGen) { return; }
+      rulesFetching = false;
+      rulesOk = true;
+      rulesData = d;
+      rulesError = rulesStale
+        ? "The law changed elsewhere — your last change was not saved." : "";
+      drawLaw();
+      lawQueueFlush();
+    }).catch(function () {
+      if (gen !== rulesGen) { return; }
+      rulesFetching = false;
+      rulesOk = false;
+      lawQueue = [];
+      drawLaw();
+    });
+  }
+
+  function postRules(doc, done, pop) {
+    if (rulesBusy) { if (done) { done("Still writing — try again."); } return; }
+    if (pop && pop.version !== null) { doc.version = pop.version; }
+    rulesBusy = true;
+    fetch("/api/rules", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(doc) })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        return r.json().then(function (body) { return { status: r.status, body: body }; });
+      })
+      .then(function (got) {
+        rulesBusy = false;
+        if (got.status === 200) {
+          rulesGen++;
+          rulesFetching = false;
+          rulesData = got.body;
+          rulesError = "";
+          rulesStale = false;
+          lawModePreview = null;
+          if (done) { done(null); }
+          drawLaw(true);
+          lawQueueFlush();
+        } else if (got.status === 409) {
+          if (pop === lawPopEl) { closeLawPop(); }
+          rulesStale = true;
+          lawModePreview = null;
+          fetchRules();
+          if (done) { done("The law changed elsewhere — nothing saved."); }
+        } else {
+          lawModePreview = null;
+          if (done) { done(got.body && got.body.error ? got.body.error : "Rejected."); }
+          drawLaw(true);
+          lawQueueFlush();
+        }
+      })
+      .catch(function () {
+        rulesBusy = false;
+        lawModePreview = null;
+        if (done) { done("Could not reach the law file."); }
+        drawLaw(true);
+        lawQueueFlush();
+      });
+  }
+
+  var lawQueue = [];
+
+  function lawWrite(path, value, done, pop) {
+    if (!pop && (rulesBusy || rulesFetching || !rulesData)) {
+      lawQueue = lawQueue.filter(function (q) { return q[0].join(".") !== path.join("."); });
+      lawQueue.push([path, value, done]);
+      return;
+    }
+    if (!rulesData) { if (done) { done("The law is not loaded."); } return; }
+    var doc = lawClone(rulesData.rules);
+    var d = doc;
+    for (var i = 0; i < path.length - 1; i++) { d = d[path[i]]; }
+    d[path[path.length - 1]] = value;
+    postRules(doc, done, pop);
+  }
+
+  function lawQueueFlush() {
+    if (!lawQueue.length || rulesBusy || rulesFetching || !rulesData) { return; }
+    var next = lawQueue.shift();
+    lawWrite(next[0], next[1], next[2]);
+  }
+
+
+  function lawBadge(layer) { return el("span", "law-badge " + layer, layer.toUpperCase()); }
+
+  var lawRowN = 0;
+
+  function lawRow(list, title, ic, cls) {
+    var r = el("div", "set-row law-grid" + (cls ? " " + cls : ""));
+    lawRowN += 1;
+    r.appendChild(el("span", "mkt-rank", String(lawRowN)));
+    var col = el("div", "set-col law-name");
+    if (ic) { col.appendChild(icon(ic)); }
+    col.appendChild(el("div", "set-title law-title", title));
+    r.appendChild(col);
+    var right = el("div", "law-cell");
+    r.appendChild(right);
+    var act = el("div", "law-act");
+    r.appendChild(act);
+    list.appendChild(r);
+    return { row: r, right: right, act: act };
+  }
+
+  function lawGet(path) {
+    var d = lawRules();
+    for (var i = 0; d && i < path.length; i++) { d = d[path[i]]; }
+    return d;
+  }
+
+  function lawShow(v, opts) {
+    if (v === null || v === undefined) { return "none"; }
+    var out = opts && opts.money ? fmtMoneyExact(v) : String(v);
+    if (opts && opts.after) { out += " " + opts.after; }
+    return out;
+  }
+
+  function closeLawPop() {
+    if (!lawPopEl) { return; }
+    document.removeEventListener("keydown", lawPopEl.onKey);
+    lawPopEl.dim.remove();
+    lawPopEl.card.remove();
+    lawPopEl = null;
+  }
+
+  function openLawPop(title, layers, subText, body, onSave) {
+    closeLawPop();
+    var dim = el("div", "qsearch-dim");
+    var card = el("div", "law-pop");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", title);
+    var t = el("div", "law-pop-title", title);
+    layers.forEach(function (layer) { t.appendChild(lawBadge(layer)); });
+    card.appendChild(t);
+    card.appendChild(el("div", "law-pop-sub", subText));
+    card.appendChild(body);
+    var err = el("div", "law-error");
+    err.style.marginTop = "10px";
+    card.appendChild(err);
+    var foot = el("div", "law-pop-foot");
+    foot.appendChild(button("Cancel", "set-action", closeLawPop));
+    var save = button("Save", "set-action law-apply-go", function () {
+      save.textContent = "Writing…";
+      onSave(function (fail) {
+        if (fail) { save.textContent = "Save"; err.textContent = fail; }
+        else if (lawPopEl === mine) { closeLawPop(); }
+      }, mine);
+    });
+    foot.appendChild(save);
+    card.appendChild(foot);
+    dim.addEventListener("mousedown", closeLawPop);
+    var onKey = function (ev) { if (ev.key === "Escape") { closeLawPop(); } };
+    document.addEventListener("keydown", onKey);
+    var mine = { dim: dim, card: card, onKey: onKey, err: err,
+      version: lawRules() ? lawRules().version : null };
+    lawPopEl = mine;
+    document.body.appendChild(dim);
+    document.body.appendChild(card);
+    var first = card.querySelector("input, button:enabled");
+    if (first) { first.focus(); }
+    return mine;
+  }
+
+  function lawNumberInput(value, opts) {
+    var line = el("div", "law-pop-input");
+    if (opts.money) { line.appendChild(el("span", "law-unit", "$")); }
+    var input = el("input", "law-field");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.placeholder = opts.nullable ? "none" : "0";
+    input.value = value === null || value === undefined ? "" : String(value);
+    line.appendChild(input);
+    if (opts.after) { line.appendChild(el("span", "law-unit", opts.after)); }
+    return { line: line, input: input };
+  }
+
+  function lawParse(input, opts) {
+    var raw = input.value.trim();
+    if (raw === "" || raw === "none") {
+      return opts.nullable ? { value: null } : { fail: "Enter a number." };
+    }
+    if (!/^\d+(\.\d{1,3})?$/.test(raw)) {
+      return { fail: opts.int ? "A whole number." : "A number, up to 3 decimals." };
+    }
+    var n = Number(raw);
+    if (opts.int && !Number.isInteger(n)) { return { fail: "A whole number." }; }
+    return { value: n };
+  }
+
+  function lawNumberPop(title, layers, subText, path, opts) {
+    var cur = lawGet(path);
+    var body = el("div");
+    var now = el("div", "law-pop-now");
+    now.appendChild(el("span", "", "Current"));
+    now.appendChild(el("b", "", lawShow(cur, opts)));
+    body.appendChild(now);
+    var made = lawNumberInput(cur, opts);
+    body.appendChild(made.line);
+    openLawPop(title, layers, subText, body, function (done, pop) {
+      var parsed = lawParse(made.input, opts);
+      if (parsed.fail) { done(parsed.fail); return; }
+      if (parsed.value === cur) { done(); return; }
+      lawWrite(path, parsed.value, done, pop);
+    });
+    made.input.focus();
+    made.input.select();
+  }
+
+  function lawEditButton(open) {
+    var edit = el("button", "set-action law-edit");
+    edit.setAttribute("aria-label", "Edit");
+    edit.setAttribute("data-tip", "Edit");
+    var pen = svg("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+      "stroke-width": "1.8", "stroke-linecap": "round", "stroke-linejoin": "round" });
+    pen.appendChild(svg("path", {
+      d: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" }));
+    pen.appendChild(svg("path", { d: "m15 5 4 4" }));
+    edit.appendChild(pen);
+    edit.addEventListener("click", open);
+    return edit;
+  }
+
+  function lawEditRow(list, title, layers, subText, path, opts, ic, cls) {
+    var r = lawRow(list, title, ic, cls);
+    r.right.appendChild(el("span", "law-value", lawShow(lawGet(path), opts)));
+    r.act.appendChild(lawEditButton(function () {
+      lawNumberPop(title, layers, subText, path, opts);
+    }));
+    return r;
+  }
+
+  function fmtMoneyExact(v) {
+    return v === null || v === undefined ? "none"
+      : "$" + Number(v).toLocaleString("en-US", { maximumFractionDigits: 3 });
+  }
+
+  function lawLifePop() {
+    var m = lawRules().machine;
+    var body = el("div");
+    var now = el("div", "law-pop-now");
+    now.appendChild(el("span", "", "Used so far"));
+    now.appendChild(el("b", "", fmtMoneyExact(m.used_usdt)));
+    body.appendChild(now);
+    var made = lawNumberInput(m.lifetime_usdt, { money: true });
+    body.appendChild(made.line);
+    var mine = openLawPop("Lifetime allowance", ["engine"],
+      "Everything the bot may use in its whole life. Only your reset starts it fresh.",
+      body, function (done, pop) {
+        var p = lawParse(made.input, { money: true });
+        if (p.fail) { done(p.fail); return; }
+        lawWrite(["machine", "lifetime_usdt"], p.value, done, pop);
+      });
+    var reset = button("Reset used to $0", "set-action", function () {
+      lawWrite(["machine", "used_usdt"], 0, function (fail) {
+        if (fail) { mine.err.textContent = fail; }
+        else if (lawPopEl === mine) { closeLawPop(); }
+      }, mine);
+    });
+    reset.style.margin = "10px 0 2px";
+    body.appendChild(reset);
+    made.input.focus();
+    made.input.select();
+  }
+
+  function lawWalletPop(name) {
+    var body = el("div");
+    var head1 = el("div", "law-pop-now");
+    head1.appendChild(el("span", "", "Use — the most the bot may put to work from here"));
+    body.appendChild(head1);
+    var u = lawNumberInput(lawGet(["wallets", name, "use_usdt"]), { money: true });
+    body.appendChild(u.line);
+    var head2 = el("div", "law-pop-now");
+    head2.appendChild(el("span", "", "Move — the most it may transfer out of here"));
+    body.appendChild(head2);
+    var m = lawNumberInput(lawGet(["wallets", name, "move_usdt"]), { money: true });
+    body.appendChild(m.line);
+    openLawPop(name[0].toUpperCase() + name.slice(1) + " transfers", ["engine"],
+      "The switch on the row shuts this section off completely.",
+      body, function (done, pop) {
+        var pu = lawParse(u.input, { money: true });
+        if (pu.fail) { done("Use: " + pu.fail); return; }
+        var pm = lawParse(m.input, { money: true });
+        if (pm.fail) { done("Move: " + pm.fail); return; }
+        var doc = lawClone(rulesData.rules);
+        doc.wallets[name].use_usdt = pu.value;
+        doc.wallets[name].move_usdt = pm.value;
+        postRules(doc, done, pop);
+      });
+    u.input.focus();
+    u.input.select();
+  }
+
+  var lawBoardCache = null;
+
+  function lawAssetsPop() {
+    var picked = (lawGet(["excluded_assets"]) || []).slice();
+    var body = el("div");
+    var find = el("input", "law-field law-asset-find");
+    find.type = "text";
+    find.placeholder = "find a token";
+    body.appendChild(find);
+    var countLine = el("div", "law-pop-now");
+    var countText = countLine.appendChild(el("span", "", ""));
+    body.appendChild(countLine);
+    var box = el("div", "law-asset-list");
+    body.appendChild(box);
+    function paint() {
+      countText.textContent = picked.length + " excluded";
+      var want = find.value.trim().toUpperCase();
+      box.textContent = "";
+      if (!lawBoardCache) {
+        box.appendChild(el("div", "news-empty", "Loading the token universe…"));
+        return;
+      }
+      var rows = lawBoardCache.filter(function (r) {
+        return !want || r.sym.indexOf(want) !== -1;
+      });
+      rows.forEach(function (r) {
+        var on = picked.indexOf(r.sym) !== -1;
+        var item = el("button", "law-asset" + (on ? " on" : ""));
+        item.appendChild(tokenBadge(r.sym));
+        item.appendChild(el("span", "law-asset-sym", r.sym));
+        item.appendChild(el("span", "law-asset-mark", on ? "excluded" : ""));
+        item.addEventListener("click", function () {
+          var at = picked.indexOf(r.sym);
+          if (at === -1) { picked.push(r.sym); } else { picked.splice(at, 1); }
+          item.classList.toggle("on", at === -1);
+          item.lastChild.textContent = at === -1 ? "excluded" : "";
+          countText.textContent = picked.length + " excluded";
+        });
+        box.appendChild(item);
+      });
+      if (!rows.length) { box.appendChild(el("div", "news-empty", "No token matches.")); }
+    }
+    find.addEventListener("input", paint);
+    paint();
+    if (!lawBoardCache) {
+      fetch("/board.json", { headers: { "X-Requested-With": "XMLHttpRequest" } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          lawBoardCache = d.rows.map(function (r) {
+            return { sym: r.sym.replace(/USDT$/, ""), vol: (r.svol || 0) + (r.fvol || 0) };
+          }).filter(function (r) { return r.sym; })
+            .sort(function (a, b) { return b.vol - a.vol; });
+          paint();
+        })
+        .catch(function () { lawBoardCache = null; });
+    }
+    openLawPop("EXCLUDED ASSETS", ["engine"],
+      "Scam tokens the bot must never see or touch, anywhere. Click a token to exclude it; "
+      + "click again to allow it.",
+      body, function (done, pop) {
+        lawWrite(["excluded_assets"], picked.slice().sort(), done, pop);
+      });
+    find.focus();
+  }
+
+  function lawControls(list) {
+    var m = lawRules().machine;
+
+    var lt = lawRow(list, "LIFETIME ALLOWANCE", "all");
+    var ltVal = lt.right.appendChild(el("span", "law-value",
+      fmtMoneyExact(m.used_usdt) + " used of " + fmtMoneyExact(m.lifetime_usdt)));
+    var slide = el("input", "law-slider");
+    slide.type = "range";
+    slide.min = "0";
+    slide.max = String(Math.max(1000, m.lifetime_usdt * 2));
+    slide.step = "25";
+    slide.value = String(m.lifetime_usdt);
+    slide.setAttribute("aria-label", "Lifetime allowance");
+    slide.addEventListener("input", function () {
+      ltVal.textContent = fmtMoneyExact(m.used_usdt) + " used of " + fmtMoneyExact(+slide.value);
+    });
+    slide.addEventListener("change", function () {
+      lawWrite(["machine", "lifetime_usdt"], +slide.value, function (fail) {
+        if (fail) { rulesError = fail; }
+      });
+    });
+    lt.right.appendChild(slide);
+    lt.act.appendChild(lawEditButton(lawLifePop));
+
+    var ex = lawRow(list, "EXCLUDED ASSETS", "x");
+    ex.right.appendChild(el("span", "law-value", lawRules().excluded_assets.length + " assets"));
+    ex.act.appendChild(lawEditButton(lawAssetsPop));
+
+    lawEditRow(list, "Futures max", ["engine"],
+      "The most the bot may ever hold in futures — the riskiest wallet.",
+      ["futures", "max_usdt"], { money: true }, "fut");
+
+    lawEditRow(list, "Futures max loss", ["engine"],
+      "Futures loss reaches this → funds access trips off.",
+      ["futures", "max_loss_usdt"], { money: true }, "fut");
+
+    lawEditRow(list, "Max leverage", ["engine"],
+      "Leverage above this anywhere → funds access trips off.",
+      ["futures", "max_leverage"], { int: true, after: "x" }, "fut");
+
+    lawEditRow(list, "Max fees", ["engine"],
+      "Fees burned reach this → the bot stops.",
+      ["machine", "max_fees_usdt"], { money: true }, "scales");
+
+    ["spot", "margin", "futures", "funding"].forEach(function (name) {
+      var w = lawRules().wallets[name];
+      var r = lawRow(list, name[0].toUpperCase() + name.slice(1) + " transfers",
+        { spot: "spot", margin: "scales", futures: "fut", funding: "spread" }[name]);
+      if (!w.on) { r.row.className += " law-off"; }
+      r.right.appendChild(el("span", "law-value", w.on
+        ? "use " + fmtMoneyExact(w.use_usdt) + " · move " + fmtMoneyExact(w.move_usdt)
+        : "OFF"));
+      var sw = el("button", "set-switch" + (w.on ? " on" : ""));
+      sw.setAttribute("role", "switch");
+      sw.setAttribute("aria-checked", w.on ? "true" : "false");
+      sw.setAttribute("aria-label", name + " transfers");
+      sw.addEventListener("click", function () {
+        lawWrite(["wallets", name, "on"], !w.on, function (fail) {
+          if (fail) { rulesError = fail; }
+        });
+      });
+      r.act.appendChild(sw);
+      r.act.appendChild(lawEditButton(function () { lawWalletPop(name); }));
+    });
+
+    var loan = lawRules().wallets.loan;
+    var lr = lawRow(list, "Loan transfers", "chain");
+    if (!loan.on) { lr.row.className += " law-off"; }
+    lr.right.appendChild(el("span", "law-value",
+      loan.on ? "borrow " + fmtMoneyExact(loan.borrow_usdt) : "OFF"));
+    var lsw = el("button", "set-switch" + (loan.on ? " on" : ""));
+    lsw.setAttribute("role", "switch");
+    lsw.setAttribute("aria-checked", loan.on ? "true" : "false");
+    lsw.setAttribute("aria-label", "Loan transfers");
+    lsw.addEventListener("click", function () {
+      lawWrite(["wallets", "loan", "on"], !loan.on, function (fail) {
+        if (fail) { rulesError = fail; }
+      });
+    });
+    lr.act.appendChild(lsw);
+    lr.act.appendChild(lawEditButton(function () {
+      lawNumberPop("Loan transfers", ["engine"],
+        "How much loan the bot may take against collateral, in total.",
+        ["wallets", "loan", "borrow_usdt"], { money: true });
+    }));
+  }
+
+  function acctControls() {
+    var section = el("div", "acct-section law-box");
+    if (!lawRules()) {
+      section.appendChild(el("div", "news-empty",
+        rulesOk ? "Loading the law…" : "The law file is unreachable."));
+      return section;
+    }
+    var mode = lawModePreview || lawGet(["machine", "mode"]);
+    section.className += " law-mode-" + mode;
+    var lhead = el("div", "set-row law-grid news-head-row law-head");
+    lhead.appendChild(el("span", "mkt-rank", "#"));
+    lhead.appendChild(el("span", "", "Control"));
+    lhead.appendChild(el("span", "", "Value"));
+    lhead.appendChild(el("span", "", "Edit"));
+    section.appendChild(lhead);
+    if (rulesError) {
+      section.appendChild(el("div", "law-error", rulesError));
+    }
+    if (!rulesOk) {
+      section.appendChild(el("div", "law-error",
+        "The law file is unreachable — showing the last loaded law."));
+    }
+    var rows = el("div", "law-rows");
+    lawRowN = 0;
+    lawControls(rows);
+    section.appendChild(rows);
+    return section;
+  }
+
+  var LAW_MODES = [["blocked", "Blocked"], ["limited", "Limited"], ["full", "Full"]];
+  var lawModeSeg = null;
+
+  var lawModePreview = null;
+
+  function lawModeSet(mode) {
+    if (lawRules() && mode === lawGet(["machine", "mode"]) && !lawQueue.length) { return; }
+    lawModePreview = mode;
+    drawLaw(true);
+    lawWrite(["machine", "mode"], mode, function (fail) {
+      if (fail) { rulesError = fail; }
+    });
+  }
+
+  function drawLaw(force) {
+    if (!acctEl || !lawSection) { return; }
+    var busy = !force && !!(lawPopEl || lawSection.contains(document.activeElement));
+    if (!busy) {
+      var next = acctControls();
+      lawSection.replaceWith(next);
+      lawSection = next;
+      if (acctSide && acctData) {
+        var side = acctRail();
+        acctSide.replaceWith(side);
+        acctSide = side;
+      }
+    }
+    if (lawModeSeg) {
+      var now = lawModePreview || lawGet(["machine", "mode"]);
+      lawModeSeg.forEach(function (m) { m[1].classList.toggle("on", m[0] === now); });
+    }
+  }
+
+  function paintAcct() {
+    if (!acctEl) { return; }
+    if (!acctPaint) { drawAcct(); return; }
+    var rows = acctSorted();
+    if (rows.map(acctKey).join(",") !== acctPaint.key) { drawAcct(); return; }
+    rows.forEach(function (r) {
+      var c = acctPaint.map[acctKey(r)];
+      var amount = fmtQty(r.amount);
+      if (c.amount.textContent !== amount) { c.amount.textContent = amount; }
+      var val = r.value === null ? "—" : fmtMoney(r.value);
+      if (c.value.textContent !== val) { c.value.textContent = val; }
+      var pnl = r.pnl === undefined || r.pnl === null ? null : r.pnl;
+      var ptxt = pnl === null ? "—" : fmtMoney(pnl);
+      if (c.pnl.textContent !== ptxt) { c.pnl.textContent = ptxt; }
+      var pcls = "mkt-num" + (pnl > 0 ? " up" : pnl < 0 ? " down" : "");
+      if (c.pnl.className !== pcls) { c.pnl.className = pcls; }
+      var sub = acctSub(r) || "";
+      if (c.sub.textContent !== sub) {
+        c.sub.textContent = sub;
+        c.sub.style.display = sub ? "" : "none";
+      }
+      var cat = ACCT_LABEL[r.wallet] || r.wallet;
+      if (c.cat.textContent !== cat) { c.cat.textContent = cat; }
+    });
+    var side = acctRail();
+    acctSide.replaceWith(side);
+    acctSide = side;
+    var busyInLaw = !!(lawPopEl || (lawSection && document.activeElement
+      && lawSection.contains(document.activeElement)));
+    if (!busyInLaw) { drawLaw(); }
+    drawTrans();
+    drawAcctStatus();
+  }
+
+  function drawAcct() {
+    if (!acctEl) { return; }
+    drawAcctStatus();
+    acctEl.textContent = "";
+    if (!acctData) {
+      acctEl.appendChild(el("div", "news-empty", acctOk
+        ? "No account snapshot yet — start the feed: python3 trader.py account" : "Feed unreachable."));
+        lawSection = acctEl.appendChild(acctControls());
+      return;
+    }
+    var cols = el("div", "news-cols");
+    var main = el("div", "news-main");
+    var halves = el("div", "acct-halves");
+    var left = el("div", "acct-half");
+    acctBar = left.appendChild(el("div", "news-pills"));
+    [["all", "Overview"]].concat(ACCT_WALLETS).forEach(function (w) {
+      var b = el("button", "news-pill" + (acctWallet === w[0] ? " on" : ""));
+      b.appendChild(icon(ACCT_ICON[w[0]] || "all"));
+      b.appendChild(document.createTextNode(w[1]));
+      b.addEventListener("click", function () { acctWallet = w[0]; drawAcct(); });
+      acctBar.appendChild(b);
+    });
+
+    var rows = acctSorted();
+
+    var list = el("div", "news-list");
+    var headRow = el("div", "acct-row news-head-row");
+    headRow.appendChild(el("span", "mkt-rank", "#"));
+    ACCT_COLS.forEach(function (c) {
+      var cell = el("button", "mkt-head" + (acctSort.key === c[0]
+        ? (acctSort.dir === 1 ? " on asc" : " on") : ""), c[1]);
+      cell.addEventListener("click", function () {
+        if (acctSort.key === c[0]) { acctSort.dir = -acctSort.dir; }
+        else { acctSort = { key: c[0], dir: c[0] === "asset" ? 1 : -1 }; }
+        drawAcct();
+      });
+      headRow.appendChild(cell);
+    });
+    list.appendChild(headRow);
+    acctPaint = { key: rows.map(acctKey).join(","), map: {} };
+    rows.forEach(function (r, i) {
+      var row = el("div", "acct-row");
+      row.appendChild(el("span", "mkt-rank", String(i + 1)));
+      var tok = el("span", "news-source");
+      tok.appendChild(tokenBadge(r.position ? r.asset.replace(/USDT$/, "") : r.asset));
+      var col = tok.appendChild(el("span", "news-source-col"));
+      col.appendChild(el("span", "news-source-name", r.asset));
+      var subEl = col.appendChild(el("span", "news-domain", acctSub(r) || ""));
+      if (!acctSub(r)) { subEl.style.display = "none"; }
+      row.appendChild(tok);
+      var catEl = row.appendChild(el("span", "acct-cat", ACCT_LABEL[r.wallet] || r.wallet));
+      var amountEl = row.appendChild(el("span", "mkt-num", fmtQty(r.amount)));
+      var valueEl = row.appendChild(el("span", "mkt-num", r.value === null ? "—" : fmtMoney(r.value)));
+      var pnl = r.pnl === undefined || r.pnl === null ? null : r.pnl;
+      var pnlEl = row.appendChild(el("span", "mkt-num" + (pnl > 0 ? " up" : pnl < 0 ? " down" : ""),
+        pnl === null ? "—" : fmtMoney(pnl)));
+      acctPaint.map[acctKey(r)] = { sub: subEl, cat: catEl, amount: amountEl,
+        value: valueEl, pnl: pnlEl };
+      list.appendChild(row);
+    });
+    left.appendChild(list);
+    if (!rows.length) { left.appendChild(el("div", "news-empty", "Nothing in this wallet.")); }
+    var side = acctRail();
+    acctSide = side;
+
+    halves.appendChild(left);
+    main.appendChild(halves);
+    cols.appendChild(main);
+    cols.appendChild(side);
+    acctEl.appendChild(cols);
+
+    lawSection = left.appendChild(acctControls());
+    acctSection = halves.appendChild(acctOrders());
+  }
+
+  function buildAccount(page, head) {
+    var acts = el("div", "set-actions");
+    var seg = el("div", "set-seg law-danger");
+    lawModeSeg = LAW_MODES.map(function (o) {
+      var b = el("button", "set-seg-btn", o[1]);
+      b.addEventListener("click", function () { lawModeSet(o[0]); });
+      seg.appendChild(b);
+      return [o[0], b];
+    });
+    acts.appendChild(seg);
+    acts.appendChild(refreshButton(function () { fetchAcct(true); fetchRules(); }));
+    var sw = el("button", "set-switch" + (acctOn ? " on" : ""));
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", acctOn ? "true" : "false");
+    sw.setAttribute("aria-label", "Account display");
+    sw.addEventListener("click", function () {
+      acctOn = !acctOn;
+      sw.classList.toggle("on", acctOn);
+      sw.setAttribute("aria-checked", acctOn ? "true" : "false");
+      drawAcctStatus();
+      if (acctOn) { fetchAcct(true); }
+    });
+    acts.appendChild(sw);
+    var live = acts.appendChild(el("span", "status"));
+    acctDot = live.appendChild(el("i", "status-dot"));
+    acctAge = live.appendChild(el("span"));
+    head.appendChild(acts);
+    acctEl = page.appendChild(el("div", "account"));
+    drawAcct();
+    fetchAcct(true);
+    fetchRules();
+    acctTimer = setInterval(function () {
+      fetchAcct();
+      if (!rulesFetching && !rulesBusy) { fetchRules(); }
+    }, 5000);
+  }
+
+  /* ---- logs: the journal worker's one file, filtered in the browser ---- */
+  var logsData = null;
+  var logsOk = true;
+  var logsEl = null;
+  var logsBar = null;
+  var logsDot = null;
+  var logsAge = null;
+  var logsTimer = null;
+  var logsRequest = null;
+  var logsFlash = 0;
+  var logsQuery = "";
+  var logsPage = 1;
+  var logsPop = null;
+  var LOGS_UNITS = [["ui", "Website", "ui.service"], ["news", "News runner", "news.service"],
+    ["net", "Network checker", "net.service"], ["tunnel", "Tunnel", "cloudflared.service"]];
+  var LOGS_LABEL = {};
+  var LOGS_FILE = {};
+  LOGS_UNITS.forEach(function (u) { LOGS_LABEL[u[0]] = u[1]; LOGS_FILE[u[0]] = u[2]; });
+  var LOGS_COLOR = { "Website": "#3b82f6", "News runner": "#2ebd85", "Network checker": "#8b5cf6", "Tunnel": "#d9a52b" };
+  var logsView = { unit: "all", on: true };
+  try { logsView = JSON.parse(localStorage.getItem("quant.logs")) || logsView; } catch (e) { /* private mode */ }
+  logsView.on = logsView.on !== false;
+  if (!LOGS_LABEL[logsView.unit]) { logsView.unit = "all"; }
+
+  function saveLogs() {
+    try { localStorage.setItem("quant.logs", JSON.stringify(logsView)); } catch (e) { /* private mode */ }
+  }
+
+  function logCategory(msg) {
+    if (/(Started|Stopping|Stopped|Deactivated|Consumed|Reloading|Reloaded) /.test(msg)) { return "Lifecycle"; }
+    if (/fail|\bdown\b|error|\bERR\b|timeout|traceback|denied|refused|unable/i.test(msg)) { return "Failure"; }
+    if (/\bWRN\b|warn/i.test(msg)) { return "Warning"; }
+    return "Routine";
+  }
+
+  function logsBadge(unit) {
+    if (unit === "tunnel") {
+      var cloud = svg("svg", { viewBox: "0 0 28 28", "class": "logs-mark" });
+      var g = cloud.appendChild(svg("g", { transform: "translate(-31 3.8) scale(.55)" }));
+      g.appendChild(svg("path", { fill: "#f48120", d: "M88.1 24c.3-1 .2-2-.3-2.6-.5-.6-1.2-1-2.1-1.1l-17.4-.2c-.1 0-.2-.1-.3-.1-.1-.1-.1-.2 0-.3.1-.2.2-.3.4-.3l17.5-.2c2.1-.1 4.3-1.8 5.1-3.8l1-2.6c0-.1.1-.2 0-.3-1.1-5.1-5.7-8.9-11.1-8.9-5 0-9.3 3.2-10.8 7.7-1-.7-2.2-1.1-3.6-1-2.4.2-4.3 2.2-4.6 4.6-.1.6 0 1.2.1 1.8-3.9.1-7.1 3.3-7.1 7.3 0 .4 0 .7.1 1.1 0 .2.2.3.3.3h32.1c.2 0 .4-.1.4-.3l.3-1.1z" }));
+      g.appendChild(svg("path", { fill: "#faad3f", d: "M93.6 12.8h-.5c-.1 0-.2.1-.3.2l-.7 2.4c-.3 1-.2 2 .3 2.6.5.6 1.2 1 2.1 1.1l3.7.2c.1 0 .2.1.3.1.1.1.1.2 0 .3-.1.2-.2.3-.4.3l-3.8.2c-2.1.1-4.3 1.8-5.1 3.8l-.2.9c-.1.1 0 .3.2.3h13.2c.2 0 .3-.1.3-.3.2-.8.4-1.7.4-2.6 0-5.2-4.3-9.5-9.5-9.5" }));
+      return cloud;
+    }
+    var icon = document.querySelector(unit === "ui" ? '#sess-icons svg[data-d="monitor"]'
+      : '.nav-row[data-page="' + (unit === "news" ? "news" : "network") + '"] svg').cloneNode(true);
+    icon.setAttribute("class", "logs-mark");
+    return icon;
+  }
+
+  function closeLogPop() {
+    if (!logsPop) { return; }
+    document.removeEventListener("keydown", logsPop.onKey);
+    logsPop.dim.remove();
+    logsPop.card.remove();
+    logsPop = null;
+  }
+
+  function openLogPop(entry) {
+    closeLogPop();
+    var when = new Date(entry.ts * 1000);
+    var dim = el("div", "qsearch-dim");
+    var card = el("div", "logs-pop");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", "Log line detail");
+    var head = el("div", "logs-pop-head");
+    head.appendChild(logsBadge(entry.unit));
+    var col = head.appendChild(el("span", "news-source-col"));
+    col.appendChild(el("span", "news-source-name", LOGS_LABEL[entry.unit] || entry.unit));
+    col.appendChild(el("span", "news-domain",
+      (LOGS_FILE[entry.unit] || "") + (entry.pid ? " · PID " + entry.pid : "")));
+    head.appendChild(el("span", "logs-pop-time",
+      dateFmt.format(when) + " · " + hoverTimeFmt.format(when)));
+    card.appendChild(head);
+    card.appendChild(el("div", "logs-pop-msg", entry.msg));
+    var mates = logsData ? logsData.entries.filter(function (e) { return e.unit === entry.unit; }) : [];
+    var at = mates.indexOf(entry);
+    for (var i = 0; at === -1 && i < mates.length; i++) {
+      if (mates[i].ts === entry.ts && mates[i].msg === entry.msg) { at = i; }
+    }
+    if (at !== -1 && mates.length > 1) {
+      var ctx = el("div", "logs-pop-ctx");
+      ctx.appendChild(el("div", "logs-pop-ctx-title",
+        "Around this line · " + (LOGS_LABEL[entry.unit] || entry.unit)));
+      mates.slice(Math.max(0, at - 4), at + 5).forEach(function (m) {
+        var line = el("div", "logs-ctx-row" + (m === mates[at] ? " on" : ""));
+        line.appendChild(el("span", "logs-ctx-time", hoverTimeFmt.format(new Date(m.ts * 1000))));
+        line.appendChild(el("span", "logs-ctx-msg", m.msg));
+        if (m !== mates[at]) { line.addEventListener("click", function () { openLogPop(m); }); }
+        ctx.appendChild(line);
+      });
+      card.appendChild(ctx);
+    }
+    dim.addEventListener("mousedown", closeLogPop);
+    var onKey = function (ev) { if (ev.key === "Escape") { closeLogPop(); } };
+    document.addEventListener("keydown", onKey);
+    logsPop = { dim: dim, card: card, onKey: onKey };
+    document.body.appendChild(dim);
+    document.body.appendChild(card);
+  }
+
+  function fetchLogs() {
+    if (!logsEl || !logsView.on || document.hidden || logsRequest) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    logsRequest = request;
+    fetch("/logs.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (logsRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        logsRequest = null;
+        if (!logsEl) { return; }
+        logsOk = true;
+        if (logsData && logsData.at === d.at) { drawLogsStatus(); return; }
+        logsFlash = logsData && logsData.entries.length ? logsData.entries[logsData.entries.length - 1].ts : 0;
+        logsData = d;
+        drawLogs();
+      }).catch(function () {
+        if (logsRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        logsRequest = null;
+        if (!logsEl) { return; }
+        logsOk = false;
+        if (logsData) { drawLogsStatus(); } else { drawLogs(); }
+      });
+  }
+
+  function drawLogsStatus() {
+    if (!logsEl) { return; }
+    logsEl.classList.toggle("off", !logsView.on);
+    if (!logsView.on) {
+      logsDot.className = "status-dot";
+      logsAge.textContent = "Off";
+      return;
+    }
+    var stale = !logsData || Date.now() - logsData.at > logsData.every * 3000;
+    logsDot.className = "status-dot " + (!logsOk ? "dead" : !logsData ? "" : stale ? "stale" : "live");
+    logsAge.textContent = !logsOk ? "Offline" : !logsData ? "" : stale ? "Stale" : "Live";
+  }
+
+  function drawLogs() {
+    if (!logsEl) { return; }
+    drawLogsStatus();
+    logsEl.textContent = "";
+    if (!logsData) {
+      logsEl.appendChild(el("div", "news-empty", "No logs yet."));
+      return;
+    }
+    var q = logsQuery.trim().toLowerCase();
+    var perUnit = {};
+    var pool = logsData.entries.filter(function (e) {
+      if (q && e.msg.toLowerCase().indexOf(q) === -1
+          && (LOGS_LABEL[e.unit] || e.unit).toLowerCase().indexOf(q) === -1) { return false; }
+      perUnit[e.unit] = (perUnit[e.unit] || 0) + 1;
+      return true;
+    });
+    var shown = logsView.unit === "all" ? pool
+      : pool.filter(function (e) { return e.unit === logsView.unit; });
+
+    logsBar.textContent = "";
+    [["all", "All Logs"]].concat(LOGS_UNITS.map(function (u) { return [u[0], u[1]]; }))
+      .forEach(function (def) {
+        var b = el("button", "news-pill" + (logsView.unit === def[0] ? " on" : ""));
+        b.appendChild(def[0] === "all" ? icon("all") : logsBadge(def[0]));
+        b.appendChild(document.createTextNode(def[1]));
+        b.addEventListener("click", function () { logsView.unit = def[0]; logsPage = 1; saveLogs(); drawLogs(); });
+        logsBar.appendChild(b);
+      });
+
+    var top = topOfHour();
+    var perHour = {};
+    LOGS_UNITS.forEach(function (u) {
+      perHour[u[0]] = [];
+      for (var i = 0; i < 24; i++) { perHour[u[0]].push(0); }
+    });
+    var totals = [];
+    var failTotals = [];
+    for (var i = 0; i < 24; i++) { totals.push(0); failTotals.push(0); }
+    var failCount = 0;
+    var dupes = {};
+    shown.forEach(function (e) {
+      var back = Math.max(0, Math.ceil((top - e.ts) / 3600));
+      if (back < 24 && perHour[e.unit]) {
+        perHour[e.unit][23 - back] += 1;
+        totals[23 - back] += 1;
+      }
+      if (logCategory(e.msg) === "Failure") {
+        failCount += 1;
+        if (back < 24) { failTotals[23 - back] += 1; }
+        var seen = dupes[e.msg] || (dupes[e.msg] = { count: 0, sample: e });
+        seen.count += 1;
+      }
+    });
+    var max = Math.max.apply(null, totals) || 1;
+
+    var cols = el("div", "news-cols");
+    var main = el("div", "news-main");
+    var list = el("div", "news-list");
+    var headRow = el("div", "logs-row news-head-row");
+    ["Time", "Service", "Message", "Category"].forEach(function (t) { headRow.appendChild(el("span", "", t)); });
+    list.appendChild(headRow);
+    var pages = Math.max(1, Math.ceil(shown.length / NEWS_PAGE_SIZE));
+    logsPage = Math.min(logsPage, pages);
+    var start = (logsPage - 1) * NEWS_PAGE_SIZE;
+    shown.slice().reverse().slice(start, start + NEWS_PAGE_SIZE).forEach(function (e) {
+      var row = el("div", "logs-row" + (logsFlash && e.ts > logsFlash ? " fresh" : ""));
+      var when = new Date(e.ts * 1000);
+      var time = el("span", "news-time", hoverTimeFmt.format(when));
+      time.title = dateFmt.format(when) + " " + hoverTimeFmt.format(when);
+      row.appendChild(time);
+      var service = el("span", "news-source");
+      service.appendChild(logsBadge(e.unit));
+      service.appendChild(el("span", "news-source-name", LOGS_LABEL[e.unit] || e.unit));
+      row.appendChild(service);
+      var msg = el("span", "logs-msg", e.msg);
+      msg.title = e.msg;
+      row.appendChild(msg);
+      row.appendChild(el("span", "news-cat", logCategory(e.msg)));
+      row.addEventListener("click", function () { openLogPop(e); });
+      list.appendChild(row);
+    });
+    main.appendChild(list);
+    if (!shown.length) {
+      main.appendChild(el("div", "news-empty", "Nothing matches these filters."));
+    } else {
+      main.appendChild(pager(shown.length, logsPage, function (p) { logsPage = p; drawLogs(); }));
+    }
+    cols.appendChild(main);
+
+    var side = el("div", "news-side");
+    function chip(name, boxEl) {
+      var b = boxEl.querySelector(".news-box-head b");
+      b.insertBefore(icon(name), b.firstChild);
+      return boxEl;
+    }
+    var activity = chip("change", box("Activity · 24h"));
+    var chart = svg("svg", { viewBox: "0 0 356 108", "class": "news-chart",
+      role: "img", "aria-label": "Log lines per hour" });
+    chart.appendChild(svg("text", { x: 0, y: 8 })).textContent = String(max);
+    var slot = 356 / 24;
+    for (var h = 0; h < 24; h++) {
+      var count = totals[h];
+      if (count) {
+        var barH = Math.max(2, count / max * 74);
+        chart.appendChild(svg("rect", { x: h * slot + 1.5, y: 88 - barH, width: slot - 3,
+          height: barH, rx: 1.5, fill: "var(--focus)" }));
+      }
+      var when = timeFmt.format(new Date((top - (23 - h) * 3600) * 1000));
+      if ((23 - h) % 6 === 0) {
+        chart.appendChild(svg("text", { x: Math.min(h * slot + slot / 2, 334), y: 104,
+          "text-anchor": "middle" })).textContent = when;
+      }
+      var hit = svg("rect", { x: h * slot, y: 0, width: slot, height: 108, fill: "transparent" });
+      hit.setAttribute("data-tip", when + " · " + count + (count ? ": " + LOGS_UNITS.filter(function (u) {
+        return perHour[u[0]][h];
+      }).map(function (u) { return u[1] + " " + perHour[u[0]][h]; }).join(", ") : ""));
+      chart.appendChild(hit);
+    }
+    chart.appendChild(svg("line", { x1: 0, y1: 88.5, x2: 356, y2: 88.5, "class": "news-chart-base" }));
+    activity.appendChild(chart);
+    side.appendChild(activity);
+
+    var services = chip("both", box("Services", "by hour"));
+    LOGS_UNITS.forEach(function (u) {
+      var lane = el("div", "logs-lane");
+      lane.appendChild(logsBadge(u[0]));
+      lane.appendChild(el("span", "logs-lane-name", u[1]));
+      var strip = el("span", "logs-lane-strip");
+      var laneMax = Math.max.apply(null, perHour[u[0]]) || 1;
+      for (var c = 0; c < 24; c++) {
+        var cell = el("i", "logs-lane-cell");
+        var n = perHour[u[0]][c];
+        if (n) {
+          cell.style.background = LOGS_COLOR[u[1]];
+          cell.style.opacity = Math.max(0.18, n / laneMax).toFixed(2);
+        }
+        cell.setAttribute("data-tip", u[1] + " · " + timeFmt.format(new Date((top - (23 - c) * 3600) * 1000))
+          + " · " + n + (n === 1 ? " line" : " lines"));
+        strip.appendChild(cell);
+      }
+      lane.appendChild(strip);
+      services.appendChild(lane);
+    });
+    side.appendChild(services);
+
+    var sharesBox = chip("breadth", box("Lines by service"));
+    var share = el("div", "logs-share");
+    var donut = svg("svg", { viewBox: "0 0 120 120", "class": "logs-donut",
+      role: "img", "aria-label": "Share of lines by service" });
+    donut.appendChild(svg("circle", { cx: 60, cy: 60, r: 44, fill: "none",
+      stroke: "var(--hover)", "stroke-width": 16 }));
+    var pairs = LOGS_UNITS.map(function (u) { return [u[1], perUnit[u[0]] || 0]; })
+      .filter(function (p) { return p[1]; }).sort(function (a, b) { return b[1] - a[1]; });
+    var total = 0;
+    pairs.forEach(function (p) { total += p[1]; });
+    var C = 2 * Math.PI * 44;
+    var run = 0;
+    pairs.forEach(function (p) {
+      var arc = svg("circle", { cx: 60, cy: 60, r: 44, fill: "none", stroke: LOGS_COLOR[p[0]],
+        "stroke-width": 16, "stroke-dasharray": (p[1] / total * C).toFixed(2) + " " + C.toFixed(2),
+        "stroke-dashoffset": (-run / total * C).toFixed(2), transform: "rotate(-90 60 60)" });
+      arc.setAttribute("data-tip", p[0] + " · " + p[1] + " of " + total
+        + " lines (" + Math.round(p[1] / total * 100) + "%)");
+      donut.appendChild(arc);
+      run += p[1];
+    });
+    share.appendChild(donut);
+    var legend = el("div", "logs-share-rows");
+    pairs.forEach(function (p) {
+      var row = el("div", "news-hbar");
+      var dot = el("span", "net-chip-dot");
+      dot.style.background = LOGS_COLOR[p[0]];
+      row.appendChild(dot);
+      row.appendChild(el("span", "news-hbar-label", p[0]));
+      row.appendChild(el("span", "news-hbar-value", String(p[1])));
+      legend.appendChild(row);
+    });
+    share.appendChild(legend);
+    sharesBox.appendChild(share);
+    side.appendChild(sharesBox);
+
+    if (failCount) {
+      var failBox = chip("alert", box("Failures · 24h", String(failCount)));
+      var fmax = Math.max.apply(null, failTotals) || 1;
+      var fchart = svg("svg", { viewBox: "0 0 356 108", "class": "news-chart",
+        role: "img", "aria-label": "Failed lines per hour" });
+      fchart.appendChild(svg("text", { x: 0, y: 8 })).textContent = String(fmax);
+      for (var f = 0; f < 24; f++) {
+        var fails = failTotals[f];
+        if (fails) {
+          var fh = Math.max(2, fails / fmax * 74);
+          fchart.appendChild(svg("rect", { x: f * slot + 1.5, y: 88 - fh, width: slot - 3,
+            height: fh, rx: 1.5, fill: "#cc2f3c" }));
+        }
+        var fwhen = timeFmt.format(new Date((top - (23 - f) * 3600) * 1000));
+        if ((23 - f) % 6 === 0) {
+          fchart.appendChild(svg("text", { x: Math.min(f * slot + slot / 2, 334), y: 104,
+            "text-anchor": "middle" })).textContent = fwhen;
+        }
+        var fhit = svg("rect", { x: f * slot, y: 0, width: slot, height: 108, fill: "transparent" });
+        fhit.setAttribute("data-tip", fwhen + " · " + fails + (fails === 1 ? " failure" : " failures"));
+        fchart.appendChild(fhit);
+      }
+      fchart.appendChild(svg("line", { x1: 0, y1: 88.5, x2: 356, y2: 88.5, "class": "news-chart-base" }));
+      failBox.appendChild(fchart);
+      side.appendChild(failBox);
+    }
+
+    var repeated = Object.keys(dupes).map(function (k) { return dupes[k]; })
+      .filter(function (d) { return d.count > 1; })
+      .sort(function (a, b) { return b.count - a.count; }).slice(0, 8);
+    if (repeated.length) {
+      var rep = chip("x", box("Repeated failures"));
+      repeated.forEach(function (d) {
+        var row = el("div", "logs-ctx-row");
+        var dot = el("span", "net-chip-dot");
+        dot.style.background = LOGS_COLOR[LOGS_LABEL[d.sample.unit]] || "var(--faint)";
+        row.appendChild(dot);
+        var msg = el("span", "logs-ctx-msg", d.sample.msg);
+        msg.title = d.sample.msg;
+        row.appendChild(msg);
+        row.appendChild(el("span", "logs-ctx-time", String(d.count)));
+        row.addEventListener("click", function () { openLogPop(d.sample); });
+        rep.appendChild(row);
+      });
+      side.appendChild(rep);
+    }
+    cols.appendChild(side);
+    logsEl.appendChild(cols);
+        logsFlash = 0;
+  }
+
+  function buildLogs(page, head) {
+    var acts = el("div", "set-actions news-acts");
+    acts.appendChild(searchBox("logs", "Search logs…", logsQuery, function (v) {
+      logsQuery = v;
+      logsPage = 1;
+      drawLogs();
+    }));
+    acts.appendChild(refreshButton(fetchLogs));
+    var sw = el("button", "set-switch" + (logsView.on ? " on" : ""));
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", logsView.on ? "true" : "false");
+    sw.setAttribute("aria-label", "Logs display");
+    sw.addEventListener("click", function () {
+      logsView.on = !logsView.on;
+      saveLogs();
+      sw.classList.toggle("on", logsView.on);
+      sw.setAttribute("aria-checked", logsView.on ? "true" : "false");
+      drawLogsStatus();
+      if (logsView.on) { fetchLogs(); }
+    });
+    acts.appendChild(sw);
+    var live = acts.appendChild(el("span", "status"));
+    logsDot = live.appendChild(el("i", "status-dot"));
+    logsAge = live.appendChild(el("span"));
+    page.classList.add("logs");
+    head.appendChild(acts);
+    logsBar = page.appendChild(el("div", "news-pills"));
+    logsEl = page.appendChild(el("div", "logs"));
+    drawLogs();
+    fetchLogs();
+    logsTimer = setInterval(fetchLogs, 5000);
+  }
+
+  /* ---- markets: every Binance USDT token, one closed set ---- */
+  var marketsData = null;
+  var marketsOk = true;
+  var marketsEl = null;
+  var marketsBar = null;
+  var marketsDot = null;
+  var marketsAge = null;
+  var marketsTimer = null;
+  var marketsRequest = null;
+  var marketsQuery = "";
+  var marketsPage = 1;
+  var marketsPaint = null;
+  var marketsSide = null;
+  var MKT_CATS = [["all", "All"], ["both", "Both"], ["spot", "Spot only"], ["fut", "Futures only"]];
+  var MKT_COLS = [["tok", "Token"], ["price", "Price"], ["chg", "24h %"], ["vol", "Volume 24h"],
+    ["v1x", "Vol 1h"], ["ratio", "F/S"], ["fund", "Funding"], ["ngap", "Basis"],
+    ["rgap", "Reverse"], ["bh", "Basis /1h"]];
+  var marketsView = { cat: "all", sort: "vol", dir: -1, on: true };
+
+  function tokenName(r) { return r.sym.slice(-4) === "USDT" ? r.sym.slice(0, -4) : r.sym; }
+
+  function tokenBadge(name) {
+    var key = name.replace(/^(1000000|1000|1M)(?=.)/, "");
+    var tries = ["/tokens/" + key + ".svg", "/tokens/" + key + ".png"];
+    if (key.length > 4 && key.slice(0, 2) === "LD") {
+      tries.push("/tokens/" + key.slice(2) + ".svg", "/tokens/" + key.slice(2) + ".png");
+    }
+    var img = el("img", "mkt-badge");
+    img.alt = "";
+    var at = 0;
+    img.src = tries[0];
+    img.addEventListener("error", function () {
+      at += 1;
+      if (at < tries.length) { img.src = tries[at]; }
+      else { img.replaceWith(el("span", "mkt-badge", name.charAt(0))); }
+    });
+    return img;
+  }
+
+  function marketsValue(r, key) {
+    if (key === "tok") { return tokenName(r); }
+    if (key === "price") {
+      var p = r.sbid !== undefined ? r.sbid : r.fbid;
+      return p === undefined ? null : parseFloat(p);
+    }
+    if (key === "chg") { return r.schg !== undefined ? r.schg : r.fchg !== undefined ? r.fchg : null; }
+    if (key === "vol") {
+      if (r.svol === undefined && r.fvol === undefined) { return null; }
+      return (r.svol || 0) + (r.fvol || 0);
+    }
+    return r[key] !== undefined ? r[key] : null;
+  }
+
+  function fmtPrice(r) {
+    var p = r.sbid !== undefined ? r.sbid : r.fbid;
+    if (p === undefined) { return "—"; }
+    if (p.indexOf(".") !== -1) { p = p.replace(/0+$/, "").replace(/\.$/, ""); }
+    var parts = p.split(".");
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return "$" + parts.join(".");
+  }
+
+  function fmtVol(v) {
+    if (v === null) { return "—"; }
+    if (v >= 1e9) { return (v / 1e9).toFixed(1) + "B"; }
+    if (v >= 1e6) { return (v / 1e6).toFixed(1) + "M"; }
+    if (v >= 1e3) { return (v / 1e3).toFixed(0) + "K"; }
+    return String(Math.round(v));
+  }
+
+  function fmtSigned(v, digits) {
+    return v === null || v === undefined ? "—" : (v > 0 ? "+" : "") + v.toFixed(digits) + "%";
+  }
+
+  function marketsShown() {
+    var q = marketsQuery.trim().toUpperCase();
+    return marketsData.rows.filter(function (r) {
+      if (marketsView.cat !== "all" && r.cat !== marketsView.cat) { return false; }
+      return !q || r.sym.indexOf(q) !== -1 || (r.fsym && r.fsym.indexOf(q) !== -1);
+    });
+  }
+
+  function marketsSort(rows) {
+    var key = marketsView.sort;
+    var dir = marketsView.dir;
+    rows.sort(function (a, b) {
+      var va = marketsValue(a, key);
+      var vb = marketsValue(b, key);
+      if (va === null && vb === null) { return a.sym < b.sym ? -1 : 1; }
+      if (va === null) { return 1; }
+      if (vb === null) { return -1; }
+      if (va < vb) { return -dir; }
+      if (va > vb) { return dir; }
+      return a.sym < b.sym ? -1 : 1;
+    });
+    return rows;
+  }
+
+  function fetchMarkets(force) {
+    if (!marketsEl || marketsRequest) { return; }
+    if (force !== true && (!marketsView.on || document.hidden)) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    marketsRequest = request;
+    fetch("/board.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (marketsRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        marketsRequest = null;
+        if (!marketsEl) { return; }
+        marketsOk = true;
+        if (marketsData && marketsData.at === d.at) { drawMarketsStatus(); return; }
+        marketsData = d;
+        paintMarkets();
+      }).catch(function () {
+        if (marketsRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        marketsRequest = null;
+        if (!marketsEl) { return; }
+        marketsOk = false;
+        if (marketsData) { drawMarketsStatus(); } else { drawMarkets(); }
+      });
+  }
+
+  function drawMarketsStatus() {
+    if (!marketsEl) { return; }
+    marketsEl.classList.toggle("off", !marketsView.on);
+    if (!marketsView.on) {
+      marketsDot.className = "status-dot";
+      marketsAge.textContent = "Off";
+      return;
+    }
+    var stale = !marketsData || Date.now() - marketsData.at > 10000;
+    marketsDot.className = "status-dot " + (!marketsOk ? "dead" : !marketsData ? "" : stale ? "stale" : "live");
+    marketsAge.textContent = !marketsOk ? "Offline" : !marketsData ? "" : stale ? "Stale" : "Live";
+  }
+
+  function steps(from, to, step) {
+    var out = [];
+    for (var v = from; v <= to + 1e-9; v += step) { out.push(Math.round(v * 1000) / 1000); }
+    return out;
+  }
+
+  function spreadBox(title, values, edges, tone, tickEvery, unit) {
+    unit = unit || "%";
+    var counts = [];
+    for (var i = 0; i <= edges.length; i++) { counts.push(0); }
+    var known = 0;
+    values.forEach(function (v) {
+      if (v === null || v === undefined) { return; }
+      known += 1;
+      var slotIndex = edges.length;
+      for (var j = 0; j < edges.length; j++) {
+        if (v < edges[j]) { slotIndex = j; break; }
+      }
+      counts[slotIndex] += 1;
+    });
+    var out = box(title, known + " tokens");
+    var max = Math.max.apply(null, counts) || 1;
+    var chart = svg("svg", { viewBox: "0 0 356 108", "class": "news-chart", role: "img", "aria-label": title });
+    chart.appendChild(svg("text", { x: 0, y: 8 })).textContent = String(max);
+    var slot = 356 / counts.length;
+    counts.forEach(function (n, i) {
+      var lo = i === 0 ? null : edges[i - 1];
+      var hi = i === edges.length ? null : edges[i];
+      if (n) {
+        var barH = Math.max(2, n / max * 74);
+        chart.appendChild(svg("rect", { x: i * slot + 1.5, y: 88 - barH, width: Math.max(slot - 3, 2),
+          height: barH, rx: 1.5, fill: tone }));
+      }
+      var hit = svg("rect", { x: i * slot, y: 0, width: slot, height: 108, fill: "transparent" });
+      hit.setAttribute("data-tip", (lo === null ? "under " + edges[0] + unit
+        : hi === null ? "over " + edges[edges.length - 1] + unit
+          : lo + unit + " to " + hi + unit) + " · " + n + (n === 1 ? " token" : " tokens"));
+      chart.appendChild(hit);
+    });
+    for (var e = 0; e < edges.length; e += tickEvery) {
+      chart.appendChild(svg("text", { x: Math.min(Math.max((e + 1) * slot, 10), 340), y: 104,
+        "text-anchor": "middle" })).textContent = String(edges[e]);
+    }
+    chart.appendChild(svg("line", { x1: 0, y1: 88.5, x2: 356, y2: 88.5, "class": "news-chart-base" }));
+    out.appendChild(chart);
+    return out;
+  }
+
+  function marketsRail(rows) {
+    var side = el("div", "news-side");
+    function railBox(name, boxEl) {
+      var b = boxEl.querySelector(".news-box-head b");
+      b.insertBefore(icon(name), b.firstChild);
+      side.appendChild(boxEl);
+    }
+    railBox("bnorm", spreadBox("Basis · normal", rows.map(function (r) { return r.ngap; }),
+      steps(-1, 1, 0.1), "#3b82f6", 5));
+    railBox("brev", spreadBox("Basis · reverse", rows.map(function (r) { return r.rgap; }),
+      steps(-1, 1, 0.1), "#8b5cf6", 5));
+
+    var up = 0;
+    var downCount = 0;
+    var flat = 0;
+    rows.forEach(function (r) {
+      var c = marketsValue(r, "chg");
+      if (c === null || c === 0) { flat += 1; }
+      else if (c > 0) { up += 1; }
+      else { downCount += 1; }
+    });
+    var breadth = box("24h breadth", rows.length + " tokens");
+    var share = el("div", "logs-share");
+    var donut = svg("svg", { viewBox: "0 0 120 120", "class": "logs-donut",
+      role: "img", "aria-label": "Tokens up, down and flat over 24 hours" });
+    donut.appendChild(svg("circle", { cx: 60, cy: 60, r: 44, fill: "none",
+      stroke: "var(--hover)", "stroke-width": 16 }));
+    var parts = [["Risers", up, "#2ebd85"], ["Fallers", downCount, "#cc2f3c"], ["Flat", flat, "var(--faint)"]]
+      .filter(function (p) { return p[1]; });
+    var total = 0;
+    parts.forEach(function (p) { total += p[1]; });
+    var C = 2 * Math.PI * 44;
+    var run = 0;
+    parts.forEach(function (p) {
+      var arc = svg("circle", { cx: 60, cy: 60, r: 44, fill: "none", stroke: p[2],
+        "stroke-width": 16, "stroke-dasharray": (p[1] / total * C).toFixed(2) + " " + C.toFixed(2),
+        "stroke-dashoffset": (-run / total * C).toFixed(2), transform: "rotate(-90 60 60)" });
+      arc.setAttribute("data-tip", p[0] + " · " + p[1] + " of " + total
+        + " tokens (" + Math.round(p[1] / total * 100) + "%)");
+      donut.appendChild(arc);
+      run += p[1];
+    });
+    share.appendChild(donut);
+    var legend = el("div", "logs-share-rows");
+    parts.forEach(function (p) {
+      var row = el("div", "news-hbar");
+      var dot = el("span", "net-chip-dot");
+      dot.style.background = p[2];
+      row.appendChild(dot);
+      row.appendChild(el("span", "news-hbar-label", p[0]));
+      row.appendChild(el("span", "news-hbar-value", String(p[1])));
+      legend.appendChild(row);
+    });
+    share.appendChild(legend);
+    breadth.appendChild(share);
+    railBox("breadth", breadth);
+
+    railBox("funding", spreadBox("Funding", rows.map(function (r) { return r.fund; }),
+      steps(-0.1, 0.1, 0.01), "#d9a52b", 5));
+    railBox("change", spreadBox("24h change", rows.map(function (r) { return marketsValue(r, "chg"); }),
+      steps(-10, 10, 1), "#10b981", 5));
+    railBox("spread", spreadBox("Spot spread", rows.map(function (r) {
+      if (r.sbid === undefined || r.sask === undefined) { return null; }
+      var bid = parseFloat(r.sbid);
+      var ask = parseFloat(r.sask);
+      return bid > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : null;
+    }), steps(0, 0.5, 0.025), "#ec4899", 4));
+    return side;
+  }
+
+  function marketsRowTexts(r, chg) {
+    return [fmtPrice(r), chg === null || chg === undefined ? "—" : Math.abs(chg).toFixed(2) + "%",
+      fmtVol(marketsValue(r, "vol")),
+      r.v1x === undefined ? "—" : r.v1x.toFixed(1) + "×",
+      r.ratio === undefined ? "—" : r.ratio.toFixed(2),
+      r.fund === undefined ? "—" : fmtSigned(r.fund, 4),
+      fmtSigned(r.ngap, 3), fmtSigned(r.rgap, 3), fmtSigned(r.bh, 3)];
+  }
+
+  function paintMarkets() {
+    if (!marketsEl) { return; }
+    if (!marketsPaint) { drawMarkets(); return; }
+    var rows = marketsSort(marketsShown());
+    var pages = Math.max(1, Math.ceil(rows.length / NEWS_PAGE_SIZE));
+    marketsPage = Math.min(marketsPage, pages);
+    var start = (marketsPage - 1) * NEWS_PAGE_SIZE;
+    var slice = rows.slice(start, start + NEWS_PAGE_SIZE);
+    var key = rows.length + ":" + slice.map(function (r) { return r.sym; }).join(",");
+    if (key !== marketsPaint.key) { drawMarkets(); return; }
+    slice.forEach(function (r) {
+      var cells = marketsPaint.map[r.sym];
+      var chg = marketsValue(r, "chg");
+      marketsRowTexts(r, chg).forEach(function (txt, i) {
+        var node = cells[i].lastChild.nodeType === 3 ? cells[i].lastChild : cells[i].firstChild;
+        if (node.nodeValue !== txt) { node.nodeValue = txt; }
+      });
+      var arr = cells[1].firstChild;
+      var cls = "mkt-arr" + (chg > 0 ? " up" : chg < 0 ? " down" : "");
+      if (arr.className !== cls) {
+        arr.className = cls;
+        arr.textContent = chg > 0 ? "▲" : chg < 0 ? "▼" : "";
+      }
+    });
+    var fresh = marketsRail(rows);
+    marketsSide.replaceWith(fresh);
+    marketsSide = fresh;
+    drawMarketsStatus();
+  }
+
+  function drawMarkets() {
+    if (!marketsEl) { return; }
+    drawMarketsStatus();
+    marketsEl.textContent = "";
+    marketsBar.textContent = "";
+    if (!marketsData) {
+      marketsEl.appendChild(el("div", "news-empty", marketsView.on
+        ? "No market data yet." : "Markets is off — press refresh for one snapshot, or switch it on."));
+      return;
+    }
+    MKT_CATS.forEach(function (c) {
+      var b = el("button", "news-pill" + (marketsView.cat === c[0] ? " on" : ""));
+      b.appendChild(icon(c[0]));
+      b.appendChild(document.createTextNode(c[1]));
+      b.addEventListener("click", function () {
+        marketsView.cat = c[0];
+        marketsPage = 1;
+        drawMarkets();
+      });
+      marketsBar.appendChild(b);
+    });
+    var rows = marketsSort(marketsShown());
+
+    var cols = el("div", "news-cols");
+    var main = el("div", "news-main");
+    var list = el("div", "news-list");
+    var headRow = el("div", "mkt-row news-head-row");
+    headRow.appendChild(el("span", "mkt-rank", "#"));
+    MKT_COLS.forEach(function (c) {
+      var cell = el("button", "mkt-head" + (marketsView.sort === c[0]
+        ? (marketsView.dir === 1 ? " on asc" : " on") : ""), c[1]);
+      cell.addEventListener("click", function () {
+        if (marketsView.sort === c[0]) { marketsView.dir = -marketsView.dir; }
+        else { marketsView.sort = c[0]; marketsView.dir = c[0] === "tok" ? 1 : -1; }
+        marketsPage = 1;
+        drawMarkets();
+      });
+      headRow.appendChild(cell);
+    });
+    list.appendChild(headRow);
+    var pages = Math.max(1, Math.ceil(rows.length / NEWS_PAGE_SIZE));
+    marketsPage = Math.min(marketsPage, pages);
+    var start = (marketsPage - 1) * NEWS_PAGE_SIZE;
+    var slice = rows.slice(start, start + NEWS_PAGE_SIZE);
+    marketsPaint = { key: rows.length + ":" + slice.map(function (r) { return r.sym; }).join(","), map: {} };
+    slice.forEach(function (r, i) {
+      var row = el("div", "mkt-row");
+      row.appendChild(el("span", "mkt-rank", String(start + i + 1)));
+      var tok = el("span", "news-source");
+      tok.appendChild(tokenBadge(tokenName(r)));
+      var col = tok.appendChild(el("span", "news-source-col"));
+      col.appendChild(el("span", "news-source-name", tokenName(r)));
+      if (r.mult) { col.appendChild(el("span", "news-domain", "×" + r.mult + " futures")); }
+      row.appendChild(tok);
+      var chg = marketsValue(r, "chg");
+      var cells = [];
+      marketsRowTexts(r, chg).forEach(function (t, i) {
+        var cell = el("span", "mkt-num");
+        if (i === 1) {
+          cell.appendChild(el("span", "mkt-arr" + (chg > 0 ? " up" : chg < 0 ? " down" : ""),
+            chg > 0 ? "▲" : chg < 0 ? "▼" : ""));
+        }
+        cell.appendChild(document.createTextNode(t));
+        if (i === 5 && r.hours !== undefined) { cell.appendChild(el("span", "mkt-int", "/" + r.hours + "h")); }
+        row.appendChild(cell);
+        cells.push(cell);
+      });
+      marketsPaint.map[r.sym] = cells;
+      list.appendChild(row);
+    });
+    main.appendChild(list);
+    if (!rows.length) {
+      main.appendChild(el("div", "news-empty", "Nothing matches these filters."));
+    } else {
+      main.appendChild(pager(rows.length, marketsPage, function (p) { marketsPage = p; drawMarkets(); }));
+    }
+    cols.appendChild(main);
+
+    var side = marketsRail(rows);
+    marketsSide = side;
+    cols.appendChild(side);
+    marketsEl.appendChild(cols);
+  }
+
+  function buildMarkets(page, head) {
+    var acts = el("div", "set-actions news-acts");
+    acts.appendChild(searchBox("markets", "Search tokens…", marketsQuery, function (v) {
+      marketsQuery = v;
+      marketsPage = 1;
+      drawMarkets();
+    }));
+    acts.appendChild(refreshButton(function () { fetchMarkets(true); }));
+    var sw = el("button", "set-switch" + (marketsView.on ? " on" : ""));
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", marketsView.on ? "true" : "false");
+    sw.setAttribute("aria-label", "Live market data");
+    sw.addEventListener("click", function () {
+      marketsView.on = !marketsView.on;
+      sw.classList.toggle("on", marketsView.on);
+      sw.setAttribute("aria-checked", marketsView.on ? "true" : "false");
+      drawMarketsStatus();
+      if (marketsView.on) { fetchMarkets(); }
+    });
+    acts.appendChild(sw);
+    var live = acts.appendChild(el("span", "status"));
+    marketsDot = live.appendChild(el("i", "status-dot"));
+    marketsAge = live.appendChild(el("span"));
+    page.classList.add("markets");
+    head.appendChild(acts);
+    marketsBar = page.appendChild(el("div", "news-pills"));
+    marketsEl = page.appendChild(el("div", "markets"));
+    drawMarkets();
+    if (marketsView.on) { fetchMarkets(true); }
+    marketsTimer = setInterval(fetchMarkets, 2000);
   }
 
   /* ---- network: the probe's one file, one graph at a time ---- */
@@ -1168,7 +3203,12 @@
     pills.setAttribute("role", "group");
     pills.setAttribute("aria-label", "Network metric");
     views.forEach(function (view) {
-      var pill = el("button", "news-pill" + (view.key === netView.tab ? " on" : ""), view.label);
+      var pill = el("button", "news-pill" + (view.key === netView.tab ? " on" : ""));
+      pill.appendChild(view.key === "site" ? logsBadge("ui")
+        : view.key === "tunnel" ? logsBadge("tunnel")
+          : view.key === "news_loop" ? logsBadge("news")
+            : icon({ trade: "change", trade_path: "both", news_sources: "breadth", traffic: "spread" }[view.key] || "change"));
+      pill.appendChild(document.createTextNode(view.label));
       pill.setAttribute("aria-pressed", view.key === netView.tab ? "true" : "false");
       pill.addEventListener("click", function () { netView.tab = view.key; netView.pick = null; saveNet(); drawNet(); });
       pills.appendChild(pill);
@@ -1488,17 +3528,22 @@
     function metric(key) {
       var series = snapshot.series[key];
       var value = false;
+      var sampleIndex = -1;
       if (series) {
         if (key === "browser") {
           for (var index = series.values.length - 1; index >= 0; index--) {
             if (series.values[index] !== false && series.values[index] !== undefined) {
               value = series.values[index];
+              sampleIndex = index;
               break;
             }
           }
         } else {
           var probeIndex = snapshot.t.indexOf(snapshot.probeAt);
-          if (probeIndex >= 0) { value = series.values[probeIndex]; }
+          if (probeIndex >= 0) {
+            value = series.values[probeIndex];
+            sampleIndex = probeIndex;
+          }
         }
       }
       if (key === "browser") {
@@ -1510,7 +3555,9 @@
       return {
         value: value,
         unit: series ? series.unit : "",
-        label: series ? series.label : key
+        label: series ? series.label : key,
+        note: series ? series.note || "" : "",
+        event: series && series.events && sampleIndex >= 0 ? series.events[sampleIndex] || 0 : 0
       };
     }
 
@@ -1519,7 +3566,7 @@
       if (metrics.some(function (item) { return item.value === false || item.value === undefined; })) {
         return "unmeasured";
       }
-      return warning ? "warn" : "live";
+      return warning || metrics.some(function (item) { return item.event; }) ? "warn" : "live";
     }
 
     function worst() {
@@ -1531,14 +3578,33 @@
       return answer;
     }
 
+    function mapReading(value, unit) {
+      var text = reading(value, unit);
+      if (text === "no sample") { return "No Sample"; }
+      if (text === "down") { return "Down"; }
+      return text;
+    }
+
     function shown(item, unit) {
-      return reading(item.value, unit === undefined ? item.unit : unit);
+      return mapReading(item.value, unit === undefined ? item.unit : unit);
+    }
+
+    function stageSource(item) {
+      if (item.note === "spot") { return "Spot"; }
+      if (item.note === "futures") { return "Futures"; }
+      return item.event ? "One Host Failed" : "Spot / Futures";
+    }
+
+    function stageValue(item) {
+      var source = stageSource(item);
+      return shown(item, "ms") + (typeof item.value === "number" &&
+        (source === "Spot" || source === "Futures") ? " · " + source : "");
     }
 
     function amount(item, singular, plural) {
       return typeof item.value === "number"
         ? item.value + " " + (item.value === 1 ? singular : plural)
-        : reading(item.value);
+        : mapReading(item.value);
     }
 
     var browser = metric("browser");
@@ -1546,8 +3612,6 @@
     var connections = metric("cf_connections");
     var lost = metric("cf_lost");
     var errors = metric("cf_errors");
-    var cfSent = metric("cf_sent");
-    var cfReceived = metric("cf_received");
     var origin = metric("origin");
     var hostSent = metric("host_sent");
     var hostReceived = metric("host_received");
@@ -1571,162 +3635,127 @@
     var originState = health([origin]);
     var spotState = health([spot]);
     var futuresState = health([futures]);
-    var spotPathState = health([spot, dns, tcp, tls, server]);
-    var tradeState = worst(spotPathState, futuresState);
-    var tradeTrunkState = tradeState;
-    if (spotPathState !== futuresState
-        && ([spotPathState, futuresState].indexOf("live") >= 0 || [spotPathState, futuresState].indexOf("warn") >= 0)) {
-      tradeTrunkState = "warn";
-    }
+    var spotPathState = spotState;
+    var tradeState = worst(spotState, futuresState);
     var newsState = health([newsLive, newsDelayed, newsFailed, newsInterval, newsDuration, newsP95],
       newsDelayed.value > 0 || newsFailed.value > 0);
     if (typeof newsLive.value === "number" && newsLive.value <= 0) { newsState = "down"; }
     var coreState = worst(originState, tradeState, newsState);
 
+    var dnsState = health([dns]);
+    var tcpState = health([tcp]);
+    var tlsState = health([tls]);
+    var serverState = health([server]);
+    var stageState = worst(dnsState, tcpState, tlsState, serverState);
+    spotPathState = spotState;
+    tradeState = worst(spotState, futuresState, stageState);
+    if (typeof connections.value === "number" && connections.value > 0 && connections.value < 4) {
+      tunnelState = "warn";
+    }
+    var newsRunnerState = health([newsInterval, newsDuration, newsP95]);
+    var newsSourceState = health([newsLive, newsDelayed, newsFailed],
+      newsDelayed.value > 0 || newsFailed.value > 0);
+    if (typeof newsLive.value === "number" && newsLive.value <= 0) { newsSourceState = "down"; }
+    newsState = worst(newsRunnerState, newsSourceState);
+    coreState = worst(originState, tradeState, newsState);
+
     var clientWidth = Math.max(netMap.clientWidth, 320);
-    var W = Math.max(clientWidth, 2192);
-    var H = 700;
+    var W = Math.max(2200, Math.min(clientWidth, 2860));
+    var H = 693;
     if (!stage) {
       stage = netMap.appendChild(el("div", "net-map-stage"));
       stage.addEventListener("scroll", function () { netMapScroll = stage.scrollLeft; });
     }
     var chart = svg("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H,
-      "class": "net-map-chart", role: "img", "aria-label": "Live network and process circuit" });
-    chart.appendChild(svg("title", {})).textContent = "Live network and process circuit";
+      "class": "net-map-chart", role: "img", "aria-label": "Network paths" });
+    chart.appendChild(svg("title", {})).textContent = "Network Paths";
     chart.appendChild(svg("desc", {})).textContent =
-      "Browser to Cloudflare path: " + browserState + "; latest net.json fetch: " + shown(browser, "ms") + ". "
-      + "Cloudflare to origin tunnel: " + tunnelState + "; "
-      + amount(connections, "live connection", "live connections") + "; lost " + shown(lost) + "; errors " + shown(errors) + ". "
-      + "EC2 origin: " + originState + ". Latest Spot probe: " + shown(spot, "ms")
-      + "; Futures probe: " + shown(futures, "ms") + ". News polling: " + newsState + "; "
-      + amount(newsLive, "live news group", "live news groups") + ". Mac, Systems Manager, Secrets Manager and signed "
-      + "order paths are on demand.";
-    stage.textContent = "";
-    stage.appendChild(chart);
-    stage.scrollLeft = Math.min(netMapScroll, Math.max(0, stage.scrollWidth - stage.clientWidth));
+      "Website delivery is " + stateLabel(worst(browserState, tunnelState, originState))
+      + ". Spot is " + stateLabel(spotPathState) + " at " + shown(spot, "ms")
+      + ". Futures is " + stateLabel(futuresState) + " at " + shown(futures, "ms")
+      + ". News collection is " + stateLabel(newsState) + ". Owner control paths are on demand.";
 
-    var cloudX = Math.max(285, W * 0.17);
-    var coreX = Math.max(cloudX + 315, W * 0.39);
-    var rightX = W - 260;
-    var browserBox = { x: 40, y: 116, w: 200, h: 124 };
-    var cloudBox = { x: cloudX, y: 103, w: 220, h: 150 };
-    var coreBox = { x: coreX, y: 52, w: 500, h: 570 };
-    var spotBox = { x: rightX, y: 121, w: 220, h: 120 };
-    var futuresBox = { x: rightX, y: 273, w: 220, h: 120 };
-    var newsBox = { x: rightX, y: 416, w: 220, h: 130 };
-    var secretsBox = { x: rightX, y: 572, w: 220, h: 100 };
-    var macBox = { x: 40, y: 525, w: 200, h: 106 };
-    var ssmBox = { x: cloudX, y: 525, w: 220, h: 106 };
+    var defs = chart.appendChild(svg("defs", {}));
+    var arrow = defs.appendChild(svg("marker", { id: "netMapArrow", viewBox: "0 0 8 8",
+      refX: 7, refY: 4, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" }));
+    arrow.appendChild(svg("path", { d: "M0 0L8 4L0 8Z", "class": "net-map-route-arrow" }));
 
-    function speed(item, base) {
-      var value = typeof item.value === "number" ? item.value : base;
-      return Math.max(1.25, Math.min(4.2, 1.05 + value / 95));
+    function stateLabel(value) {
+      if (value === "live") { return "Live"; }
+      if (value === "warn") { return "Warning"; }
+      if (value === "down") { return "Down"; }
+      if (value === "unmeasured") { return "No Measurement"; }
+      return "On Demand";
     }
 
-    function flowStyle(seconds, offset) {
-      var phase = -((Date.now() / 1000 + offset * 0.41) % seconds);
-      return "--flow-speed:" + seconds.toFixed(2) + "s;--flow-delay:" + phase.toFixed(2) + "s";
+    function attachTip(target, data) {
+      if (!data) { return target; }
+      target.setAttribute("data-tip", data.title || "Connection Detail");
+      target.setAttribute("data-tip-title", data.title || "Connection Detail");
+      target.setAttribute("data-tip-tone", data.state || "idle");
+      target.setAttribute("data-tip-status", data.status || stateLabel(data.state));
+      if (data.subtitle) { target.setAttribute("data-tip-subtitle", data.subtitle); }
+      if (data.stats) { target.setAttribute("data-tip-stats", JSON.stringify(data.stats)); }
+      if (data.detail) { target.setAttribute("data-tip-detail", data.detail); }
+      return target;
     }
 
-    function addWire(def) {
-      var group = chart.appendChild(svg("g", {}));
-      if (def.tip) { group.appendChild(svg("title", {})).textContent = def.tip; }
-      group.appendChild(svg("path", { d: def.d, "class": "net-circuit-wire " + def.state }));
-      if (def.state === "live" || def.state === "warn") {
-        var seconds = def.speed || 2.2;
-        group.appendChild(svg("path", {
-          d: def.d, "class": "net-circuit-flow " + def.state + (def.reverse ? " reverse" : ""),
-          style: flowStyle(seconds, def.offset || 0)
-        }));
-        if (def.both) {
-          group.appendChild(svg("path", {
-            d: def.d, "class": "net-circuit-flow " + def.state + (def.reverse ? "" : " reverse"),
-            style: flowStyle(seconds * 1.08, (def.offset || 0) + 2)
-          }));
+    function pathFrom(points) {
+      return points.map(function (point, index) {
+        return (index ? "L" : "M") + point[0] + " " + point[1];
+      }).join("");
+    }
+
+    function route(def) {
+      var group = chart.appendChild(svg("g", {
+        "class": "net-map-route " + def.state,
+        style: "--route-color:" + def.color
+      }));
+      attachTip(group, def.info);
+      var paths = def.paths || [{ d: def.d, state: def.state }];
+      paths.forEach(function (item) {
+        var attributes = { d: item.d, "class": "net-map-route-line " + (item.state || def.state) };
+        if (def.arrows === "both") { attributes["marker-start"] = "url(#netMapArrow)"; }
+        if (def.arrows !== "none") { attributes["marker-end"] = "url(#netMapArrow)"; }
+        group.appendChild(svg("path", attributes));
+      });
+      var motionPaths = def.motionPaths || [{ d: def.d, state: def.state }];
+      motionPaths.forEach(function (motion, motionIndex) {
+        var motionState = motion.state || def.state;
+        if (motionState === "down" || motionState === "idle" || motionState === "unmeasured") {
+          return;
         }
-      }
-      if (!def.noEnds) {
-        group.appendChild(svg("circle", {
-          cx: def.start[0], cy: def.start[1], r: 3.2, "class": "net-circuit-junction " + def.state
+        var duration = def.duration || 12;
+        var phase = (Date.now() / 1000 + (def.offset || 0)
+          + motionIndex * duration / motionPaths.length) % duration;
+        var pulse = group.appendChild(svg("g", {
+          "class": "net-map-pulse " + motionState
         }));
-        group.appendChild(svg("circle", {
-          cx: def.end[0], cy: def.end[1], r: 3.2, "class": "net-circuit-junction " + def.state
+        pulse.appendChild(svg("circle", {
+          r: 5.2, "class": "net-map-pulse-core"
         }));
+        pulse.appendChild(svg("animateMotion", {
+          path: motion.d,
+          dur: duration + "s",
+          begin: "-" + phase.toFixed(3) + "s",
+          repeatCount: "indefinite",
+          calcMode: "linear"
+        }));
+      });
+      group.appendChild(svg("path", { d: def.d, "class": "net-map-route-hit" }));
+      if (def.label) {
+        var label = group.appendChild(svg("text", {
+          x: def.labelX, y: def.labelY, "class": "net-map-route-label",
+          "text-anchor": def.anchor || "middle"
+        }));
+        label.textContent = def.label;
       }
       return group;
     }
 
-    var browserEdge = worst(browserState, tunnelState);
-    var cloudCore = worst(tunnelState, originState);
-    var browserY = browserBox.y + browserBox.h / 2;
-    var cloudY = cloudBox.y + cloudBox.h / 2;
-    var browserSpeed = speed(browser, 180);
-    addWire({
-      d: "M" + (browserBox.x + browserBox.w) + " " + (browserY - 8) + "H" + cloudBox.x,
-      state: browserEdge, speed: browserSpeed, offset: 1, start: [browserBox.x + browserBox.w, browserY - 8],
-      end: [cloudBox.x, browserY - 8], tip: "Browser request over HTTPS"
-    });
-    addWire({
-      d: "M" + (browserBox.x + browserBox.w) + " " + (browserY + 8) + "H" + cloudBox.x,
-      state: browserEdge, speed: browserSpeed * 1.08, offset: 2, reverse: true,
-      start: [browserBox.x + browserBox.w, browserY + 8], end: [cloudBox.x, browserY + 8],
-      tip: "Page and live JSON response"
-    });
-
-    var knownLaneCount = typeof connections.value === "number";
-    var laneCount = knownLaneCount ? Math.max(0, Math.min(4, Math.round(connections.value))) : 0;
-    var renderedLanes = Math.max(1, laneCount);
-    var tunnelCloudPins = [];
-    var tunnelCorePins = [];
-    for (var lane = 0; lane < renderedLanes; lane++) {
-      var laneY = cloudBox.y + 60 + lane * 19;
-      tunnelCloudPins.push(laneY - cloudBox.y);
-      tunnelCorePins.push(laneY - coreBox.y);
-      addWire({
-        d: "M" + (cloudBox.x + cloudBox.w) + " " + laneY + "H" + coreBox.x,
-        state: cloudCore, speed: speed(tunnelRtt, 2) + lane * 0.12, offset: 4 + lane,
-        reverse: lane % 2 === 1, both: true,
-        start: [cloudBox.x + cloudBox.w, laneY], end: [coreBox.x, laneY],
-        tip: knownLaneCount && laneCount === 0
-          ? "Expected Cloudflare tunnel path; currently no live connections"
-          : knownLaneCount ? "Encrypted Cloudflare connection " + (lane + 1) + " of " + laneCount
-            : "Expected encrypted Cloudflare path; live count unavailable"
-      });
-    }
-
-    var edgeX = coreBox.x + coreBox.w;
-    var spotY = spotBox.y + spotBox.h / 2;
-    var futuresY = futuresBox.y + futuresBox.h / 2;
-    var newsY = newsBox.y + newsBox.h / 2;
-    var secretY = secretsBox.y + secretsBox.h / 2;
-    addWire({ d: "M" + edgeX + " " + spotY + "H" + spotBox.x,
-      state: spotPathState, speed: speed(spot, 150), offset: 10, both: true,
-      start: [edgeX, spotY], end: [spotBox.x, spotY], tip: "EC2 to Binance Spot over public HTTPS" });
-    addWire({ d: "M" + edgeX + " " + futuresY + "H" + futuresBox.x,
-      state: futuresState, speed: speed(futures, 150), offset: 11, both: true,
-      start: [edgeX, futuresY], end: [futuresBox.x, futuresY], tip: "EC2 to Binance Futures over public HTTPS" });
-    addWire({ d: "M" + edgeX + " " + newsY + "H" + newsBox.x,
-      state: newsState,
-      speed: Math.max(4.5, Math.min(12, (typeof newsInterval.value === "number" ? newsInterval.value : 120) / 10)),
-      offset: 14, both: true, start: [edgeX, newsY], end: [newsBox.x, newsY],
-      tip: "News runner downloads RSS and JSON sources"
-    });
-
-    var macY = macBox.y + macBox.h / 2;
-    var ssmY = ssmBox.y + ssmBox.h / 2;
-    addWire({ d: "M" + (macBox.x + macBox.w) + " " + macY + "H" + ssmBox.x,
-      state: "idle", start: [macBox.x + macBox.w, macY], end: [ssmBox.x, macY],
-      tip: "Commands and output exist only while the owner connects" });
-    addWire({ d: "M" + (ssmBox.x + ssmBox.w) + " " + ssmY + "H" + coreBox.x,
-      state: "idle", start: [ssmBox.x + ssmBox.w, ssmY], end: [coreBox.x, ssmY],
-      tip: "AWS Systems Manager control channel, on demand" });
-    addWire({ d: "M" + edgeX + " " + secretY + "H" + secretsBox.x,
-      state: "idle", start: [edgeX, secretY], end: [secretsBox.x, secretY],
-      tip: "Trader retrieves credentials from Secrets Manager only when a command starts" });
-
     function addLogo(parent, kind, x, y) {
       var logo = parent.appendChild(svg("g", {
-        "class": "net-circuit-logo " + kind, transform: "translate(" + x + " " + y + ")"
+        "class": "net-map-logo " + kind, transform: "translate(" + x + " " + y + ")"
       }));
       function serviceIcon(id, stopA, stopB, glyph) {
         var grad = logo.appendChild(svg("linearGradient", { id: id, x1: "0%", y1: "100%", x2: "100%", y2: "0%" }));
@@ -1789,227 +3818,666 @@
     }
 
 
-    function pins(group, box, left, right) {
-      function side(items, x1, x2) {
-        (items || []).forEach(function (pin) {
-          var y = typeof pin === "number" ? pin : pin.y;
-          var state = typeof pin === "number" ? "" : " " + pin.state;
-          group.appendChild(svg("line", {
-            x1: x1, y1: y, x2: x2, y2: y, "class": "net-circuit-pin" + state
-          }));
+    function drawSymbol(parent, kind) {
+      var glyph = parent.appendChild(svg("g", { "class": "net-map-glyph" }));
+      if (kind === "origin") {
+        [5, 12, 19].forEach(function (y) {
+          glyph.appendChild(svg("rect", { x: 4, y: y, width: 20, height: 5, rx: 1.5,
+            "class": "net-map-glyph-soft" }));
+          glyph.appendChild(svg("circle", { cx: 20.5, cy: y + 2.5, r: 1.2,
+            "class": "net-map-glyph-fill" }));
         });
+      } else if (kind === "probe") {
+        glyph.appendChild(svg("circle", { cx: 14, cy: 14, r: 9, "class": "net-map-glyph-line" }));
+        glyph.appendChild(svg("circle", { cx: 14, cy: 14, r: 2.2, "class": "net-map-glyph-fill" }));
+        glyph.appendChild(svg("path", { d: "M14 14L22 9M7 20A10 10 0 0 0 23 18",
+          "class": "net-map-glyph-line" }));
+      } else if (kind === "runner") {
+        glyph.appendChild(svg("circle", { cx: 14, cy: 15, r: 9, "class": "net-map-glyph-line" }));
+        glyph.appendChild(svg("path", { d: "M10 3H18M14 3V6M14 15L19 11",
+          "class": "net-map-glyph-line" }));
+        glyph.appendChild(svg("circle", { cx: 14, cy: 15, r: 1.8, "class": "net-map-glyph-fill" }));
+      } else if (kind === "trader") {
+        glyph.appendChild(svg("rect", { x: 3.5, y: 5, width: 21, height: 18, rx: 3,
+          "class": "net-map-glyph-soft" }));
+        glyph.appendChild(svg("path", { d: "M8 11L12 14L8 17M15 18H20",
+          "class": "net-map-glyph-line" }));
+      } else if (kind === "dns") {
+        glyph.appendChild(svg("path", { d: "M6 15A8 8 0 0 1 19 8L22 8M22 8L19 5M22 13A8 8 0 0 1 9 20L6 20M6 20L9 23",
+          "class": "net-map-glyph-line" }));
+        glyph.appendChild(svg("circle", { cx: 14, cy: 14, r: 2.2, "class": "net-map-glyph-fill" }));
+      } else if (kind === "tcp") {
+        glyph.appendChild(svg("path", { d: "M5 8H20M17 5L20 8L17 11M23 14H8M11 11L8 14L11 17M5 21H20M17 18L20 21L17 24",
+          "class": "net-map-glyph-line" }));
+      } else if (kind === "tls") {
+        glyph.appendChild(svg("rect", { x: 6, y: 12, width: 16, height: 12, rx: 2.5,
+          "class": "net-map-glyph-soft" }));
+        glyph.appendChild(svg("path", { d: "M9 12V9A5 5 0 0 1 19 9V12M14 16V20",
+          "class": "net-map-glyph-line" }));
+      } else if (kind === "server") {
+        glyph.appendChild(svg("path", { d: "M3 16H7L10 9L14 21L18 12L21 16H25",
+          "class": "net-map-glyph-line" }));
       }
-      side(left, -8, 0);
-      side(right, box.w, box.w + 8);
+      return glyph;
     }
 
-    function module(box, data) {
+    function component(data) {
+      var width = data.width || 220;
+      var height = data.height || 96;
+      var top = -height / 2;
+      var headerHeight = 46;
       var group = chart.appendChild(svg("g", {
-        transform: "translate(" + box.x + " " + box.y + ")",
-        "class": "net-circuit-node " + data.state, "data-tip": data.tip || ""
+        transform: "translate(" + data.x + " " + data.y + ")",
+        "class": "net-map-component " + (data.logo || data.kind || "service")
+          + (data.external ? " external" : "") + " net-map-status " + data.state
       }));
-      group.appendChild(svg("rect", { width: box.w, height: box.h, rx: 12, "class": "net-circuit-surface",
-        style: "stroke:color-mix(in srgb, " + data.brand + " 45%, var(--line-2))" }));
-      group.appendChild(svg("path", {
-        d: "M1 12Q1 1 12 1H" + (box.w - 12) + "Q" + (box.w - 1) + " 1 " + (box.w - 1)
-          + " 12V52H1Z", "class": "net-circuit-node-bar",
-        style: "fill:color-mix(in srgb, " + data.brand + " 12%, var(--panel))"
-      }));
-      addLogo(group, data.logo, 13, 12);
-      group.appendChild(svg("text", { x: 53, y: 24, "class": "net-circuit-node-title" })).textContent = data.title;
-      group.appendChild(svg("text", { x: 53, y: 41, "class": "net-circuit-node-kicker" })).textContent = data.kicker;
-      data.lines.forEach(function (line, index) {
-        group.appendChild(svg("text", {
-          x: 15, y: 75 + index * 19,
-          "class": index === 0 ? "net-circuit-node-value" : "net-circuit-node-detail"
-        })).textContent = line;
-      });
-      pins(group, box, data.left, data.right);
+      attachTip(group, data.info);
+      group.appendChild(svg("rect", { x: 0, y: top, width: width, height: height,
+        rx: 11, "class": "net-map-card-bg" }));
+      group.appendChild(svg("rect", { x: width - 5, y: top + 12, width: 3, height: 22,
+        rx: 1.5, "class": "net-map-card-accent" }));
+      group.appendChild(svg("rect", { x: 1, y: top + 1, width: width - 2, height: headerHeight,
+        rx: 10, "class": "net-map-card-header" }));
+      group.appendChild(svg("rect", { x: 1, y: top + headerHeight - 10, width: width - 2,
+        height: 11, "class": "net-map-card-header" }));
+      group.appendChild(svg("line", { x1: 1, y1: top + headerHeight, x2: width - 1,
+        y2: top + headerHeight, "class": "net-map-card-divider" }));
+      if (data.logo) {
+        addLogo(group, data.logo, 16, top + 9);
+      } else {
+        var symbol = group.appendChild(svg("g", { transform: "translate(16 " + (top + 9) + ")" }));
+        drawSymbol(symbol, data.kind);
+      }
+      group.appendChild(svg("text", { x: width / 2 + 8, y: top + 19,
+        "text-anchor": "middle", "class": "net-map-card-title" }))
+        .textContent = data.title;
+      group.appendChild(svg("text", { x: width / 2 + 8, y: top + 36,
+        "text-anchor": "middle", "class": "net-map-card-subtitle" }))
+        .textContent = data.subtitle || stateLabel(data.state);
+      group.appendChild(svg("text", { x: width / 2, y: top + 72,
+        "text-anchor": "middle", "class": "net-map-card-value" }))
+        .textContent = data.value;
+      if (data.detail) {
+        group.appendChild(svg("text", { x: width / 2, y: top + 89,
+          "text-anchor": "middle", "class": "net-map-card-detail" }))
+          .textContent = data.detail;
+      }
       return group;
     }
 
-    function drawCore() {
-      var group = chart.appendChild(svg("g", {
-        transform: "translate(" + coreBox.x + " " + coreBox.y + ")",
-        "class": "net-circuit-node net-circuit-core " + coreState,
-        "data-tip": "Website, network checker, news runner and Trader command run on this EC2 machine."
-      }));
-      group.appendChild(svg("rect", {
-        width: coreBox.w, height: coreBox.h, rx: 15, "class": "net-circuit-surface"
-      }));
-      group.appendChild(svg("path", {
-        d: "M1 15Q1 1 15 1H485Q499 1 499 15V65H1Z", "class": "net-circuit-core-head",
-        style: "fill:color-mix(in srgb, #ff9900 12%, var(--panel))"
-      }));
-      addLogo(group, "ec2", 18, 18);
-      group.appendChild(svg("text", { x: 58, y: 30, "class": "net-circuit-core-title" })).textContent = "YOUR AWS EC2";
-      group.appendChild(svg("text", { x: 58, y: 48, "class": "net-circuit-core-meta" })).textContent =
-        "ap-south-1 · origin + workers";
-      group.appendChild(svg("text", { x: 478, y: 29, "class": "net-circuit-core-live" })).textContent =
-        "origin " + shown(origin, "ms");
-      group.appendChild(svg("text", { x: 478, y: 47, "class": "net-circuit-core-meta", "text-anchor": "end" })).textContent =
-        "RX " + shown(hostReceived) + " · TX " + shown(hostSent);
-
-      function innerWire(d, state, flow, both) {
-        group.appendChild(svg("path", { d: d, "class": "net-circuit-wire " + state }));
-        if (flow && (state === "live" || state === "warn")) {
-          group.appendChild(svg("path", {
-            d: d, "class": "net-circuit-flow " + state,
-            style: flowStyle(2.4, flow)
-          }));
-          if (both) {
-            group.appendChild(svg("path", {
-              d: d, "class": "net-circuit-flow " + state + " reverse",
-              style: flowStyle(2.55, flow + 1)
-            }));
-          }
-        }
-      }
-      var tunnelBusTop = Math.min.apply(null, tunnelCorePins.concat([126]));
-      var tunnelBusBottom = Math.max.apply(null, tunnelCorePins.concat([126]));
-      var tunnelBus = tunnelCorePins.map(function (y) { return "M0 " + y + "H12"; }).join("")
-        + "M12 " + tunnelBusTop + "V" + tunnelBusBottom + "M12 126H22";
-      innerWire(tunnelBus, cloudCore, 21, true);
-      innerWire("M22 330H8V147H22", originState, 22);
-      innerWire("M273 147H250V177H16V300H22", tradeState, 23);
-      innerWire("M124 262V286", newsState, 24);
-      innerWire("M478 129H500", tradeTrunkState, 25, true);
-      innerWire("M480 129V570", "idle", 0);
-      innerWire("M480 281H500", futuresState, 0);
-      innerWire("M227 207H250V274H480", newsState, 26, true);
-      innerWire("M480 429H500", newsState, 0);
-      innerWire("M480 570H500", "idle", 0);
-      innerWire("M0 526H10V550H490V280H375V262", "idle", 0);
-      group.appendChild(svg("circle", {
-        cx: 480, cy: 129, r: 3.2, "class": "net-circuit-junction " + tradeTrunkState
-      }));
-
-      function chip(x, y, w, title, role, value, state) {
-        var chipGroup = group.appendChild(svg("g", {
-          transform: "translate(" + x + " " + y + ")", "class": "net-circuit-chip " + state
-        }));
-        chipGroup.appendChild(svg("rect", { width: w, height: 74, rx: 9, "class": "net-circuit-surface" }));
-        chipGroup.appendChild(svg("text", { x: 14, y: 20, "class": "net-circuit-chip-title" })).textContent = title;
-        chipGroup.appendChild(svg("text", { x: 14, y: 40, "class": "net-circuit-chip-role" })).textContent = role;
-        chipGroup.appendChild(svg("text", { x: 14, y: 59, "class": "net-circuit-chip-value" })).textContent = value;
-      }
-      chip(22, 92, 205, "Website origin", "SERVES UI + LIVE JSON", "local RTT " + shown(origin, "ms"), originState);
-      chip(273, 92, 205, "Network checker", "STANDING LOOP · " + reading(snapshot.every, "s").toUpperCase(),
-        "Spot " + shown(spot, "ms") + " · F " + shown(futures, "ms"), tradeState);
-      chip(22, 188, 205, "News runner", "STANDING LOOP · " + shown(newsInterval, "s"),
-        "cycle " + shown(newsDuration, "s") + " · p95 " + shown(newsP95), newsState);
-      chip(273, 188, 205, "Trader command", "OWNER STARTED · ON DEMAND",
-        "signed orders when used", "idle");
-
-      group.appendChild(svg("rect", { x: 22, y: 286, width: 456, height: 56, rx: 8, "class": "net-circuit-bus" }));
-      group.appendChild(svg("text", { x: 36, y: 306, "class": "net-circuit-bus-title" })).textContent = "LIVE FILE BUS";
-      group.appendChild(svg("text", { x: 36, y: 327, "class": "net-circuit-bus-value" })).textContent =
-        "net.json + news.json";
-      group.appendChild(svg("text", {
-        x: 462, y: 327, "class": "net-circuit-bus-value", "text-anchor": "end"
-      })).textContent = "workers write · website reads";
-
-      group.appendChild(svg("rect", { x: 22, y: 363, width: 456, height: 96, rx: 9, "class": "net-circuit-stage-box" }));
-      group.appendChild(svg("text", { x: 36, y: 383, "class": "net-circuit-bus-title" })).textContent =
-        "LATEST SPOT REQUEST PATH";
-      var stages = [
-        ["DNS", shown(dns, "ms")], ["TCP", shown(tcp, "ms")],
-        ["TLS", shown(tls, "ms")], ["SERVER", shown(server, "ms")]
-      ];
-      stages.forEach(function (item, index) {
-        var x = 36 + index * 104;
-        group.appendChild(svg("rect", {
-          x: x, y: 395, width: 88, height: 48, rx: 6, "class": "net-circuit-stage-box"
-        }));
-        group.appendChild(svg("text", { x: x + 10, y: 413, "class": "net-circuit-stage-name" })).textContent = item[0];
-        group.appendChild(svg("text", { x: x + 10, y: 433, "class": "net-circuit-stage-value" })).textContent = item[1];
-        if (index < stages.length - 1) {
-          group.appendChild(svg("path", {
-            d: "M" + (x + 93) + " 419l6 4-6 4Z", "class": "net-circuit-stage-arrow"
-          }));
-        }
-      });
-
-      group.appendChild(svg("rect", { x: 22, y: 480, width: 456, height: 62, rx: 9, "class": "net-circuit-stage-box" }));
-      group.appendChild(svg("text", { x: 36, y: 502, "class": "net-circuit-stage-name" })).textContent =
-        "CLOCK / HOST SIGNALS";
-      group.appendChild(svg("text", { x: 36, y: 525, "class": "net-circuit-stage-value" })).textContent =
-        "Binance clock offset " + shown(clockOffset, "ms");
-      group.appendChild(svg("text", {
-        x: 462, y: 525, "class": "net-circuit-stage-value", "text-anchor": "end"
-      })).textContent = "origin " + shown(origin, "ms");
-      pins(group, coreBox,
-        tunnelCorePins.map(function (y) { return { y: y, state: cloudCore }; })
-          .concat([{ y: 526, state: "idle" }]),
-        [{ y: 129, state: tradeTrunkState }, { y: 281, state: futuresState },
-          { y: 429, state: newsState }, { y: 570, state: "idle" }]);
+    function endpoint(data) {
+      data.external = true;
+      if (!data.height) { data.height = 104; }
+      return component(data);
     }
 
-    drawCore();
-    module(browserBox, {
-      title: "Your browser", kicker: "VIEWER", logo: "browser", state: browserState,
-      brand: "#4285f4",
-      lines: ["net.json fetch " + shown(browser, "ms"), "download + parse · every 5 s"],
-      left: [], right: [{ y: browserBox.h / 2 - 8, state: browserEdge },
-        { y: browserBox.h / 2 + 8, state: browserEdge }],
-      tip: "Latest net.json download and JSON parse: " + shown(browser, "ms")
+    function service(data) {
+      return component(data);
+    }
+
+    function instrumentStage(data) {
+      var group = chart.appendChild(svg("g", {
+        transform: "translate(" + data.x + " " + data.y + ")",
+        "class": "net-map-station " + data.kind + " net-map-status " + data.state
+      }));
+      attachTip(group, data.info);
+      group.appendChild(svg("rect", { x: -56, y: -106, width: 112, height: 88,
+        rx: 8, "class": "net-map-node-hit" }));
+      var symbol = group.appendChild(svg("g", { transform: "translate(-14 -102)" }));
+      drawSymbol(symbol, data.kind);
+      group.appendChild(svg("path", { d: "M0 -18V0", "class": "net-map-stage-lead" }));
+      group.appendChild(svg("rect", { x: -4, y: -3, width: 8, height: 6, rx: 1.5,
+        "class": "net-map-stage-tap" }));
+      if (data.caption) {
+        group.appendChild(svg("text", { x: 0, y: -61, "class": "net-map-stage-caption",
+          "text-anchor": "middle" })).textContent = data.caption;
+      }
+      group.appendChild(svg("text", { x: 0, y: -43, "class": "net-map-station-title",
+        "text-anchor": "middle" })).textContent = data.title;
+      group.appendChild(svg("text", { x: 0, y: -27, "class": "net-map-station-value",
+        "text-anchor": "middle" })).textContent = data.value;
+      return group;
+    }
+
+    function apiEgress(data) {
+      var busTop = typeof data.top === "number" ? data.top - data.y : -68;
+      var busBottom = typeof data.bottom === "number" ? data.bottom - data.y : 68;
+      var group = chart.appendChild(svg("g", {
+        transform: "translate(" + data.x + " " + data.y + ")",
+        "class": "net-map-egress net-map-status " + data.state
+      }));
+      attachTip(group, data.info);
+      group.appendChild(svg("rect", { x: -38, y: busTop - 14, width: 76,
+        height: busBottom - busTop + 28,
+        rx: 9, "class": "net-map-node-hit" }));
+      group.appendChild(svg("path", { d: "M0 " + busTop + "V" + busBottom,
+        "class": "net-map-egress-bus" }));
+      group.appendChild(svg("rect", { x: -4, y: busTop - 4, width: 8, height: 8, rx: 2,
+        "class": "net-map-egress-port" }));
+      group.appendChild(svg("rect", { x: -4, y: busBottom - 4, width: 8, height: 8, rx: 2,
+        "class": "net-map-egress-port" }));
+      group.appendChild(svg("rect", { x: -24, y: -24, width: 48, height: 48, rx: 8,
+        "class": "net-map-egress-core" }));
+      [-12, 0, 12].forEach(function (offset) {
+        group.appendChild(svg("line", { x1: -17, y1: offset, x2: 17, y2: offset,
+          "class": "net-map-egress-grid" }));
+        group.appendChild(svg("line", { x1: offset, y1: -17, x2: offset, y2: 17,
+          "class": "net-map-egress-grid" }));
+      });
+      group.appendChild(svg("text", { x: 0, y: -34, "text-anchor": "middle",
+        "class": "net-map-egress-title" })).textContent = "API Egress";
+      return group;
+    }
+
+    function openSwitch(data) {
+      var group = chart.appendChild(svg("g", {
+        transform: "translate(" + data.x + " " + data.y + ")",
+        "class": "net-map-switch net-map-status idle"
+      }));
+      attachTip(group, data.info);
+      group.appendChild(svg("rect", { x: -32, y: -28, width: 64, height: 48,
+        "class": "net-map-node-hit" }));
+      group.appendChild(svg("circle", { cx: -12, cy: 0, r: 3.5, "class": "net-map-switch-contact" }));
+      group.appendChild(svg("circle", { cx: 12, cy: 0, r: 3.5, "class": "net-map-switch-contact" }));
+      group.appendChild(svg("path", { d: "M-8 0L8 -10", "class": "net-map-switch-arm" }));
+      group.appendChild(svg("text", { x: 0, y: -18, "text-anchor": "middle",
+        "class": "net-map-switch-label" })).textContent = data.label;
+      return group;
+    }
+
+    var ec2Width = 1160;
+    var xEc2 = Math.max(650, Math.round((W - ec2Width) / 2));
+    var ec2Right = xEc2 + ec2Width;
+    var ec2Top = 10;
+    var ec2Bottom = 658;
+    var browserWidth = 230;
+    var edgeWidth = 270;
+    var xLeft = 40;
+    var leftGap = Math.max(50, Math.min(150,
+      (xEc2 - xLeft - browserWidth - edgeWidth) / 2));
+    var xEdge = xLeft + browserWidth + leftGap;
+    var originWidth = 214;
+    var probeWidth = 230;
+    var runnerWidth = 210;
+    var endpointWidth = 240;
+    var macWidth = 230;
+    var ssmWidth = 250;
+    var traderWidth = 224;
+    var processCenter = xEc2 + 320;
+    var xOrigin = processCenter - originWidth / 2;
+    var xProbe = processCenter - probeWidth / 2;
+    var xRunner = processCenter - runnerWidth / 2;
+    var xTrader = processCenter - traderWidth / 2;
+    var xRight = W - endpointWidth - 36;
+    var yWebsite = 138;
+    var ySpot = 258;
+    var yFutures = 288;
+    var yNews = 438;
+    var yControl = 588;
+    var yProbe = yFutures;
+    var probeOut = xProbe + probeWidth;
+    var splitX = probeOut + 36;
+    var panelX = probeOut + 70;
+    var xEgress = ec2Right - 70;
+    var panelWidth = xEgress - panelX - 54;
+    var dnsX = Math.round(panelX + panelWidth * 0.12);
+    var tcpX = Math.round(panelX + panelWidth * 0.38);
+    var tlsX = Math.round(panelX + panelWidth * 0.64);
+    var serverX = Math.round(panelX + panelWidth * 0.88);
+    var secretsX = xRight;
+    var xSsm = xEdge + 40;
+    var originBottom = yWebsite + 48;
+    var originRight = xOrigin + originWidth;
+    var probeRight = xProbe + probeWidth;
+    var originProbeBusX = Math.max(originRight, probeRight) + 28;
+
+    var ec2 = chart.appendChild(svg("g", {
+      "class": "net-map-ec2 net-map-status " + coreState
+    }));
+    attachTip(ec2, {
+      title: "AWS EC2 Host", state: coreState, subtitle: "ap-south-1 · Standing Processes",
+      stats: [["Origin", shown(origin, "ms")], ["Host Receive", shown(hostReceived)],
+        ["Host Transmit", shown(hostSent)], ["Probe Cadence", mapReading(snapshot.every, "s")]],
+      detail: "This enclosure is the real ownership boundary. Website Origin, Network Probe, News Runner, and Trader execute inside this EC2 host. The request stages and API Egress show their measured outbound paths."
     });
-    module(cloudBox, {
-      title: "Cloudflare", kicker: "EDGE + TUNNEL", logo: "cloudflare", state: tunnelState,
-      brand: "#f38020",
-      lines: ["edge RTT " + shown(tunnelRtt, "ms"),
-        amount(connections, "live connection", "live connections"),
-        "lost " + shown(lost) + " · errors " + shown(errors),
-        "RX " + shown(cfReceived) + " · TX " + shown(cfSent)],
-      left: [{ y: cloudY - cloudBox.y - 8, state: browserEdge },
-        { y: cloudY - cloudBox.y + 8, state: browserEdge }],
-      right: tunnelCloudPins.map(function (y) { return { y: y, state: cloudCore }; }),
-      tip: amount(connections, "Cloudflare connection", "Cloudflare connections") + " · edge "
-        + shown(tunnelRtt, "ms") + " · lost " + shown(lost) + " · errors " + shown(errors)
+    ec2.appendChild(svg("rect", { x: xEc2, y: ec2Top, width: ec2Right - xEc2,
+      height: ec2Bottom - ec2Top, rx: 15, "class": "net-map-ec2-body" }));
+    ec2.appendChild(svg("rect", { x: xEc2 + 1, y: ec2Top + 1,
+      width: ec2Right - xEc2 - 2, height: 58, rx: 14, "class": "net-map-ec2-header" }));
+    ec2.appendChild(svg("rect", { x: xEc2 + 1, y: ec2Top + 44,
+      width: ec2Right - xEc2 - 2, height: 15, "class": "net-map-ec2-header" }));
+    ec2.appendChild(svg("line", { x1: xEc2 + 1, y1: ec2Top + 59,
+      x2: ec2Right - 1, y2: ec2Top + 59, "class": "net-map-ec2-divider" }));
+    addLogo(ec2, "ec2", xEc2 + 20, ec2Top + 15);
+    ec2.appendChild(svg("text", { x: xEc2 + 62, y: ec2Top + 25,
+      "class": "net-map-ec2-title" })).textContent = "Your AWS EC2";
+    ec2.appendChild(svg("text", { x: xEc2 + 62, y: ec2Top + 45,
+      "class": "net-map-ec2-meta" })).textContent = "ap-south-1 · Website Origin + Standing Workers";
+    ec2.appendChild(svg("text", { x: ec2Right - 20, y: ec2Top + 24,
+      "text-anchor": "end", "class": "net-map-ec2-state" })).textContent = stateLabel(coreState);
+    ec2.appendChild(svg("text", { x: ec2Right - 20, y: ec2Top + 44,
+      "text-anchor": "end", "class": "net-map-ec2-meta" })).textContent =
+        "Origin " + shown(origin, "ms") + " · RX " + shown(hostReceived) + " · TX " + shown(hostSent);
+
+    var browserToEdge = worst(browserState, tunnelState);
+    route({
+      d: pathFrom([[xLeft + browserWidth, yWebsite], [xEdge, yWebsite]]),
+      state: browserToEdge, color: "#3b82f6", duration: 18, offset: 1,
+      arrows: "both",
+      info: {
+        title: "Browser ↔ Cloudflare", state: browserToEdge,
+        subtitle: "Public HTTPS · Request + Response",
+        stats: [["Latest Browser Fetch", shown(browser, "ms")], ["Refresh Cadence", "Every 5 s"]],
+        detail: "One slow light point indicates the path is active. It is not a packet counter. If this route turns red, the browser could not fetch the live page data."
+      }
     });
-    module(spotBox, {
-      title: "Binance Spot", kicker: "API.BINANCE.COM", logo: "binance", state: spotState,
-      brand: "#f0b90b",
-      lines: ["round trip " + shown(spot, "ms"), "clock offset " + shown(clockOffset, "ms")],
-      left: [spotBox.h / 2], right: [],
-      tip: "EC2 to Binance Spot over public HTTPS: " + shown(spot, "ms")
+
+    var knownLaneCount = typeof connections.value === "number";
+    var laneCount = knownLaneCount ? Math.max(0, Math.min(4, Math.round(connections.value))) : 0;
+    var tunnelPaths = [];
+    [-24, -8, 8, 24].forEach(function (offset, index) {
+      tunnelPaths.push({
+        d: pathFrom([[xEdge + edgeWidth, yWebsite + offset], [xOrigin, yWebsite + offset]]),
+        state: knownLaneCount && index >= laneCount ? "idle" : tunnelState
+      });
     });
-    module(futuresBox, {
-      title: "Binance Futures", kicker: "FAPI.BINANCE.COM", logo: "binance", state: futuresState,
-      brand: "#f0b90b",
-      lines: ["round trip " + shown(futures, "ms"), "hedge-leg API path"],
-      left: [futuresBox.h / 2], right: [],
-      tip: "EC2 to Binance Futures over public HTTPS: " + shown(futures, "ms")
+    route({
+      d: pathFrom([[xEdge + edgeWidth, yWebsite], [xOrigin, yWebsite]]),
+      paths: tunnelPaths, state: worst(tunnelState, originState), color: "#f38020",
+      motionPaths: [tunnelPaths[0]], duration: 16, offset: 3, arrows: "both",
+      info: {
+        title: "Cloudflare Tunnel ↔ Website Origin", state: worst(tunnelState, originState),
+        subtitle: "Four Outbound Encrypted Links",
+        stats: [["Live Links", knownLaneCount ? laneCount + " / 4" : "No Measurement"],
+          ["Edge Round Trip", shown(tunnelRtt, "ms")], ["Lost / Errors", shown(lost) + " / " + shown(errors)],
+          ["Origin Round Trip", shown(origin, "ms")]],
+        detail: "Telemetry reports the live connection count. The four conductors visualize that count; the UI does not claim to trace four individual tunnel sockets."
+      }
     });
-    module(newsBox, {
-      title: "News sources", kicker: "PUBLIC RSS + JSON", logo: "news", state: newsState,
-      brand: "#f26522",
-      lines: [amount(newsLive, "live group", "live groups"),
-        amount(newsDelayed, "delayed group", "delayed groups") + " · "
-          + amount(newsFailed, "failed feed", "failed feeds"),
-        "cadence " + shown(newsInterval, "s") + " · cycle " + shown(newsDuration, "s")],
-      left: [newsBox.h / 2], right: [],
-      tip: amount(newsLive, "live news group", "live news groups") + " · "
-        + amount(newsFailed, "failed feed", "failed feeds") + " · p95 " + shown(newsP95)
+
+    route({
+      d: pathFrom([[probeRight, yProbe - 18], [originProbeBusX, yProbe - 18],
+        [originProbeBusX, yWebsite + 10], [originRight, yWebsite + 10]]),
+      state: tradeState, color: "#2563eb", duration: 16, offset: 4,
+      arrows: "forward",
+      info: {
+        title: "Network Probe → Website Origin", state: tradeState,
+        subtitle: "Measured Network Results",
+        stats: [["Spot", shown(spot, "ms")], ["Futures", shown(futures, "ms")],
+          ["Clock Offset", shown(clockOffset, "ms")]],
+        detail: "The Network Probe writes its measured results for Website Origin to serve to the browser."
+      }
     });
-    module(secretsBox, {
-      title: "Secrets Manager", kicker: "AWS CREDENTIALS PATH", logo: "secrets", state: "idle",
-      brand: "#dd344c",
-      lines: ["read only at command start"], left: [secretsBox.h / 2], right: [],
-      tip: "Credentials are retrieved by Trader only when a command starts; the UI never receives them."
+    route({
+      d: pathFrom([[xRunner, yNews], [xOrigin - 28, yNews],
+        [xOrigin - 28, originBottom + 26], [xOrigin + 40, originBottom + 26],
+        [xOrigin + 40, originBottom]]),
+      state: newsState, color: "#0e7490", duration: 20, offset: 8,
+      arrows: "forward",
+      info: {
+        title: "News Runner → Website Origin", state: newsState,
+        subtitle: "Collected News Status",
+        stats: [["Last Cycle", shown(newsDuration, "s")], ["P95", shown(newsP95)],
+          ["Live Sources", shown(newsLive)]],
+        detail: "The News Runner writes collection status for Website Origin to serve to the browser."
+      }
     });
-    module(macBox, {
-      title: "Your Mac", kicker: "OWNER TERMINAL", logo: "terminal", state: "idle",
-      brand: "#3a3a3c",
-      lines: ["starts commands on demand"], left: [], right: [macBox.h / 2],
-      tip: "The owner-control path exists only when you connect."
+
+    var stagePath = pathFrom([[probeOut, yProbe], [splitX, yProbe], [splitX, ySpot],
+      [xEgress, ySpot]]);
+    route({
+      d: stagePath, state: stageState, color: "#64748b", duration: 28, offset: 5,
+      arrows: "forward",
+      info: {
+        title: "Shared Stage Diagnostics", state: stageState,
+        subtitle: "Slower Boundary Across Spot + Futures Checks",
+        stats: [["DNS", stageValue(dns)], ["TCP", stageValue(tcp)],
+          ["TLS", stageValue(tls)], ["Reply", stageValue(server)]],
+        detail: "The probe times each boundary separately for Spot and Futures. Every station shows the slower successful reading from the latest pair; the four values do not claim to be one traced request."
+      }
     });
-    module(ssmBox, {
-      title: "AWS SSM", kicker: "SYSTEMS MANAGER", logo: "ssm", state: "idle",
-      brand: "#e7157b",
-      lines: ["commands + output on demand"], left: [ssmBox.h / 2], right: [ssmBox.h / 2],
-      tip: "Systems Manager carries owner commands and output on demand."
+    var spotPath = pathFrom([[xEgress, ySpot], [xEgress, yWebsite], [xRight, yWebsite]]);
+    route({
+      d: spotPath, state: spotState, color: "#4169e1", duration: 28, offset: 6,
+      arrows: "both",
+      info: {
+        title: "Network Probe ↔ Binance Spot", state: spotState,
+        subtitle: "Measured Total HTTPS Round Trip",
+        stats: [["Round Trip", shown(spot, "ms")], ["Endpoint", "api.binance.com"],
+          ["Clock Offset", shown(clockOffset, "ms")]],
+        detail: "This blue route is the real total request to Binance Spot. The neutral diagnostic rail beside it compares individual Spot and Futures boundaries and is not Spot-only."
+      }
     });
+    var futuresPath = pathFrom([[probeOut, yProbe], [xRight, yFutures]]);
+    route({
+      d: futuresPath, state: futuresState, color: "#1aa981", duration: 30, offset: 7,
+      arrows: "both",
+      info: {
+        title: "Network Probe ↔ Binance Futures", state: futuresState,
+        subtitle: "Measured Public HTTPS Path",
+        stats: [["Round Trip", shown(futures, "ms")], ["Endpoint", "fapi.binance.com"],
+          ["Purpose", "Hedge-Leg Reachability"]],
+        detail: "This green route is the real total request to Binance Futures. The neutral diagnostic rail compares individual Spot and Futures boundaries and labels which host supplied each slower reading."
+      }
+    });
+    route({
+      d: pathFrom([[xRunner + runnerWidth, yNews], [xRight, yNews]]),
+      state: newsState, color: "#0e7490", duration: 22, offset: 9, arrows: "both",
+      info: {
+        title: "News Runner ↔ Public Sources", state: newsState,
+        subtitle: "Scheduled RSS + JSON Poll",
+        stats: [["Cadence", shown(newsInterval, "s")], ["Last Cycle", shown(newsDuration, "s")],
+          ["P95", shown(newsP95)], ["Live / Delayed / Failed",
+            shown(newsLive) + " / " + shown(newsDelayed) + " / " + shown(newsFailed)]],
+        detail: "The route covers outbound source requests, inbound responses, parsing, and completion of one news polling cycle."
+      }
+    });
+
+    route({
+      d: pathFrom([[xLeft + macWidth, yControl], [xSsm, yControl]]),
+      state: "idle", color: "#7d8795", arrows: "both",
+      info: {
+        title: "Your Mac ↔ AWS Systems Manager", state: "idle", status: "On Demand",
+        subtitle: "Owner Command + Output",
+        stats: [["Activation", "Owner Session Only"], ["Live Telemetry", "Not Collected"]],
+        detail: "This is the real on-demand control path, drawn muted because it has no standing traffic. The Network page does not claim to detect a current Mac session."
+      }
+    });
+    route({
+      d: pathFrom([[xSsm + ssmWidth, yControl], [xTrader, yControl]]),
+      state: "idle", color: "#a855f7", arrows: "both",
+      info: {
+        title: "AWS Systems Manager ↔ Trader Command", state: "idle", status: "On Demand",
+        subtitle: "Owner-Started EC2 Process",
+        stats: [["Activation", "Owner Command Only"], ["Live Telemetry", "Not Collected"]],
+        detail: "Systems Manager is the real route used to start Trader. This map shows that architecture but does not monitor whether a command is running right now."
+      }
+    });
+    route({
+      d: pathFrom([[xTrader + traderWidth, yControl], [secretsX, yControl]]),
+      state: "idle", color: "#d64562", arrows: "forward",
+      info: {
+        title: "Trader Command → Secrets Manager", state: "idle", status: "On Demand",
+        subtitle: "Credential Read Path",
+        stats: [["Activation", "Trader Start Only"], ["Live Telemetry", "Not Collected"],
+          ["UI Access", "Never"]],
+        detail: "Trader uses this real credential path only when a command starts. The website never receives credentials and does not monitor individual reads."
+      }
+    });
+    var traderApiY = yControl - 68;
+    route({
+      d: pathFrom([[xTrader + traderWidth, yControl], [xTrader + traderWidth + 46, yControl],
+        [xTrader + traderWidth + 46, traderApiY], [xEgress, traderApiY],
+        [xEgress, (yWebsite + yFutures) / 2]]),
+      state: "idle", color: "#7c3aed", arrows: "forward",
+      info: {
+        title: "Trader → Binance APIs", state: "idle", status: "On Demand",
+        subtitle: "Signed HTTPS Through API Egress",
+        stats: [["Activation", "Owner Command Only"], ["Live Telemetry", "Not Collected"],
+          ["Spot Host", "api.binance.com"],
+          ["Futures Host", "fapi.binance.com"]],
+        detail: "This is Trader's real signed-HTTPS route when an owner starts it. The Network page measures host reachability above but does not claim to trace live orders on this grey path."
+      }
+    });
+
+    instrumentStage({
+      x: dnsX, y: ySpot, kind: "dns", title: "DNS Resolution", value: stageValue(dns),
+      caption: "Query ↔ IP Answer", state: dnsState,
+      info: {
+        title: "DNS Resolution", state: dnsState,
+        subtitle: "Slower Spot/Futures DNS Boundary",
+        stats: [["Latest Duration", shown(dns, "ms")], ["Slower Host", stageSource(dns)],
+          ["Resolver", "AWS VPC Resolver"]],
+        detail: "The backend resolves each Binance host separately and displays the slower latest reading. A failure here means one host returned no address, so its TCP connection could not begin."
+      }
+    });
+    instrumentStage({
+      x: tcpX, y: ySpot, kind: "tcp", title: "TCP Connect", value: stageValue(tcp),
+      caption: "SYN · SYN-ACK · ACK", state: tcpState,
+      info: {
+        title: "TCP Connect", state: tcpState,
+        subtitle: "Slower Spot/Futures TCP Boundary",
+        stats: [["Latest Duration", shown(tcp, "ms")], ["Slower Host", stageSource(tcp)],
+          ["Starts After", "DNS Resolution"]],
+        detail: "The backend opens each Binance TCP connection separately and displays the slower latest reading. A failure here means one resolved host did not accept its connection."
+      }
+    });
+    instrumentStage({
+      x: tlsX, y: ySpot, kind: "tls", title: "TLS Security", value: stageValue(tls),
+      caption: "Secure Session Setup", state: tlsState,
+      info: {
+        title: "TLS Security", state: tlsState,
+        subtitle: "Slower Spot/Futures TLS Boundary",
+        stats: [["Latest Duration", shown(tls, "ms")], ["Slower Host", stageSource(tls)],
+          ["Starts After", "TCP Connect"]],
+        detail: "The backend creates each encrypted Binance session separately and displays the slower latest reading. A failure here means one TCP connection opened but its secure session did not."
+      }
+    });
+    instrumentStage({
+      x: serverX, y: ySpot, kind: "server", title: "Binance Reply", value: stageValue(server),
+      caption: "Server → First Byte", state: serverState,
+      info: {
+        title: "Binance Reply", state: serverState,
+        subtitle: "Slower Spot/Futures Reply Boundary",
+        stats: [["Latest Duration", shown(server, "ms")], ["Slower Host", stageSource(server)],
+          ["Measurement", "Secure Request → First Byte"]],
+        detail: "The backend requests server time from each Binance host and displays the slower latest first-byte wait. This is normally the largest part of either round trip."
+      }
+    });
+
+    apiEgress({
+      x: xEgress, y: (yWebsite + yFutures) / 2, top: yWebsite, bottom: yFutures,
+      state: tradeState,
+      info: {
+        title: "API Egress", state: tradeState,
+        subtitle: "EC2 Boundary → Binance Public APIs",
+        stats: [["Spot", shown(spot, "ms")], ["Futures", shown(futures, "ms")]],
+        detail: "This junction shows where the two measured HTTPS paths leave EC2. It is a visual boundary, not a separate latency measurement."
+      }
+    });
+
+    endpoint({
+      x: xLeft, y: yWebsite, width: browserWidth, logo: "browser", title: "Your Browser",
+      subtitle: "Current Viewer", value: "Live Data Fetch " + shown(browser, "ms"),
+      detail: "Refreshes Every 5 Seconds", state: browserState,
+      info: {
+        title: "Your Browser", state: browserState, subtitle: "Current Viewer",
+        stats: [["Latest Fetch", shown(browser, "ms")], ["Cadence", "Every 5 s"]],
+        detail: "This measurement includes download and JSON parsing in the current browser."
+      }
+    });
+    endpoint({
+      x: xEdge, y: yWebsite, width: edgeWidth, logo: "cloudflare", title: "Cloudflare",
+      subtitle: "Edge + Encrypted Tunnel", value: amount(connections, "Live Connection", "Live Connections"),
+      detail: "Edge " + shown(tunnelRtt, "ms") + " · Lost " + shown(lost) + " · Errors " + shown(errors),
+      state: tunnelState,
+      info: {
+        title: "Cloudflare Edge + Tunnel", state: tunnelState,
+        subtitle: "Public Edge → Website Origin",
+        stats: [["Edge Round Trip", shown(tunnelRtt, "ms")], ["Live Links", shown(connections)],
+          ["Lost / Errors", shown(lost) + " / " + shown(errors)]],
+        detail: "Cloudflare terminates public HTTPS and forwards it through four outbound tunnel connections."
+      }
+    });
+    service({
+      x: xOrigin, y: yWebsite, width: originWidth, kind: "origin", title: "Website Origin",
+      subtitle: "EC2 Web Service", value: "Local Round Trip " + shown(origin, "ms"),
+      detail: "Serves UI + Live Data", state: originState,
+      info: {
+        title: "Website Origin", state: originState, subtitle: "EC2 Web Server",
+        stats: [["Local Round Trip", shown(origin, "ms")], ["Serves", "UI + Live JSON"]],
+        detail: "This is the exact process where the Cloudflare tunnel terminates and the website response begins."
+      }
+    });
+    service({
+      x: xProbe, y: yProbe, width: probeWidth, height: 102, kind: "probe", title: "Network Probe",
+      subtitle: "Standing Monitor · Every " + mapReading(snapshot.every, "s"),
+      value: "Spot " + shown(spot, "ms") + " · Futures " + shown(futures, "ms"),
+      detail: "Clock Offset " + shown(clockOffset, "ms"), state: tradeState,
+      info: {
+        title: "Network Probe", state: tradeState, subtitle: "Standing EC2 Worker",
+        stats: [["Cadence", mapReading(snapshot.every, "s")], ["Spot", shown(spot, "ms")],
+          ["Futures", shown(futures, "ms")], ["Clock Offset", shown(clockOffset, "ms")]],
+        detail: "One standing worker branches into the separately measured Spot and Futures routes."
+      }
+    });
+    endpoint({
+      x: xRight, y: yWebsite, width: endpointWidth, logo: "binance", title: "Binance Spot",
+      subtitle: "api.binance.com", value: "Round Trip " + shown(spot, "ms"),
+      detail: "Clock Offset " + shown(clockOffset, "ms"),
+      state: spotState,
+      info: {
+        title: "Binance Spot", state: spotState, subtitle: "api.binance.com",
+        stats: [["Round Trip", shown(spot, "ms")], ["Clock Offset", shown(clockOffset, "ms")],
+          ["Use", "Spot + Margin Orders"]],
+        detail: "This is the public host used by the Spot and Margin leg."
+      }
+    });
+    endpoint({
+      x: xRight, y: yFutures, width: endpointWidth, logo: "binance", title: "Binance Futures",
+      subtitle: "fapi.binance.com", value: "Round Trip " + shown(futures, "ms"), detail: "Hedge-Leg API",
+      state: futuresState,
+      info: {
+        title: "Binance Futures", state: futuresState, subtitle: "fapi.binance.com",
+        stats: [["Round Trip", shown(futures, "ms")], ["Use", "Futures Hedge Leg"]],
+        detail: "This is the separately measured Futures host used for the hedge leg."
+      }
+    });
+    service({
+      x: xRunner, y: yNews, width: runnerWidth, kind: "runner", title: "News Runner",
+      subtitle: "Standing Polling Loop", value: "Last Cycle " + shown(newsDuration, "s"),
+      detail: "Cadence " + shown(newsInterval, "s") + " · P95 " + shown(newsP95),
+      state: newsRunnerState,
+      info: {
+        title: "News Runner", state: newsRunnerState, subtitle: "Standing EC2 Worker",
+        stats: [["Cadence", shown(newsInterval, "s")], ["Last Cycle", shown(newsDuration, "s")],
+          ["P95", shown(newsP95)]],
+        detail: "The timer is the real standing polling loop, not a generic process box."
+      }
+    });
+    endpoint({
+      x: xRight, y: yNews, width: endpointWidth, logo: "news", title: "News Sources",
+      subtitle: "Public RSS + JSON", value: amount(newsLive, "Live Group", "Live Groups"),
+      detail: amount(newsDelayed, "Delayed", "Delayed") + " · " + amount(newsFailed, "Failed", "Failed"),
+      state: newsSourceState,
+      info: {
+        title: "Public News Sources", state: newsSourceState, subtitle: "RSS + JSON Hosts",
+        stats: [["Live", shown(newsLive)], ["Delayed", shown(newsDelayed)], ["Failed", shown(newsFailed)]],
+        detail: "A warning or failure here points to the public source side, separately from the News Runner timer."
+      }
+    });
+    endpoint({
+      x: xLeft, y: yControl, width: macWidth, logo: "terminal", title: "Your Mac",
+      subtitle: "Owner Terminal", value: "Starts Commands On Demand", state: "idle",
+      info: {
+        title: "Your Mac", state: "idle", status: "On Demand", subtitle: "Owner Terminal",
+        stats: [["Activation", "Owner Session"], ["Live Telemetry", "Not Collected"]],
+        detail: "This is the owner endpoint in the real control topology. The Network page does not monitor the Mac or infer whether a session is currently open."
+      }
+    });
+    endpoint({
+      x: xSsm, y: yControl, width: ssmWidth, logo: "ssm", title: "AWS Systems Manager",
+      subtitle: "Owner Control Channel", value: "Commands + Output On Demand", state: "idle",
+      info: {
+        title: "AWS Systems Manager", state: "idle", status: "On Demand",
+        subtitle: "Owner Control Channel",
+        stats: [["Purpose", "Commands + Output"], ["Live Telemetry", "Not Collected"]],
+        detail: "Systems Manager is the real owner control channel to EC2. Its presence here is architectural; this page does not read current session traffic."
+      }
+    });
+    service({
+      x: xTrader, y: yControl, width: traderWidth, kind: "trader", title: "Trader Command",
+      subtitle: "Owner Started · On Demand", value: "Starts On Owner Command",
+      detail: "Live Process State Not Collected", state: "idle",
+      info: {
+        title: "Trader Command", state: "idle", status: "On Demand",
+        subtitle: "Owner-Started EC2 Process",
+        stats: [["Activation", "Owner Command Only"], ["Live Telemetry", "Not Collected"],
+          ["Credentials", "Read At Start"],
+          ["API Traffic", "Spot + Futures While Running"]],
+        detail: "Trader really starts on an owner command, reads credentials, uses both Binance paths, prints output, and exits. This Network page does not expose a live Trader process sensor."
+      }
+    });
+    endpoint({
+      x: secretsX, y: yControl, width: endpointWidth, logo: "secrets", title: "Secrets Manager",
+      subtitle: "AWS Credentials Path", value: "Read At Command Start",
+      detail: "Never Exposed To UI", state: "idle",
+      info: {
+        title: "AWS Secrets Manager", state: "idle", status: "On Demand",
+        subtitle: "Trader Credential Read",
+        stats: [["Activation", "Trader Start Only"], ["Live Telemetry", "Not Collected"],
+          ["UI Access", "Never"]],
+        detail: "The credential path is real and activates only while Trader starts. The UI cannot inspect credentials or observe individual reads."
+      }
+    });
+
+    openSwitch({
+      x: (xLeft + macWidth + xSsm) / 2, y: yControl, label: "Owner Session",
+      info: {
+        title: "Owner Session Switch", state: "idle", status: "On Demand",
+        subtitle: "Your Mac ↔ AWS Systems Manager",
+        stats: [["Diagram Meaning", "Owner-Activated Path"], ["Live Telemetry", "Not Collected"]],
+        detail: "The open symbol identifies an on-demand boundary. It is architectural notation, not a live session indicator."
+      }
+    });
+    openSwitch({
+      x: (xSsm + ssmWidth + xTrader) / 2, y: yControl, label: "Start Trader",
+      info: {
+        title: "Trader Start Switch", state: "idle", status: "On Demand",
+        subtitle: "AWS Systems Manager ↔ Trader Command",
+        stats: [["Diagram Meaning", "Owner-Activated Path"], ["Live Telemetry", "Not Collected"]],
+        detail: "The open symbol identifies where an owner command starts Trader. It is not a live process indicator."
+      }
+    });
+    openSwitch({
+      x: (xTrader + traderWidth + secretsX) / 2, y: yControl, label: "Read Credentials",
+      info: {
+        title: "Credential Read Switch", state: "idle", status: "On Demand",
+        subtitle: "Trader Command → Secrets Manager",
+        stats: [["Diagram Meaning", "Start-Time Read Path"], ["Live Telemetry", "Not Collected"]],
+        detail: "The open symbol identifies the start-time credential boundary. It does not claim to observe a current Secrets Manager request."
+      }
+    });
+
+    function sameSvgShape(current, next) {
+      if (current.nodeType !== next.nodeType) { return false; }
+      if (current.nodeType === 1 && current.tagName !== next.tagName) { return false; }
+      if (current.childNodes.length !== next.childNodes.length) { return false; }
+      for (var childIndex = 0; childIndex < current.childNodes.length; childIndex++) {
+        if (!sameSvgShape(current.childNodes[childIndex], next.childNodes[childIndex])) { return false; }
+      }
+      return true;
+    }
+
+    function reconcileSvg(current, next) {
+      if (!sameSvgShape(current, next)) { return false; }
+      function sync(currentNode, nextNode) {
+        if (currentNode.nodeType === 3) {
+          if (currentNode.nodeValue !== nextNode.nodeValue) { currentNode.nodeValue = nextNode.nodeValue; }
+          return;
+        }
+        Array.prototype.slice.call(currentNode.attributes || []).forEach(function (attribute) {
+          if (!nextNode.hasAttribute(attribute.name)) { currentNode.removeAttribute(attribute.name); }
+        });
+        Array.prototype.slice.call(nextNode.attributes || []).forEach(function (attribute) {
+          if (currentNode.tagName === "animateMotion" && attribute.name === "begin") { return; }
+          if (currentNode.getAttribute(attribute.name) !== attribute.value) {
+            currentNode.setAttribute(attribute.name, attribute.value);
+          }
+        });
+        for (var index = 0; index < currentNode.childNodes.length; index++) {
+          sync(currentNode.childNodes[index], nextNode.childNodes[index]);
+        }
+      }
+      sync(current, next);
+      return true;
+    }
+
+    var currentChart = stage.querySelector(".net-map-chart");
+    if (!currentChart || !reconcileSvg(currentChart, chart)) {
+      stage.replaceChildren(chart);
+    }
+    stage.scrollLeft = Math.min(netMapScroll, Math.max(0, stage.scrollWidth - stage.clientWidth));
 
   }
 
@@ -2026,6 +4494,7 @@
       drawConnectionMap();
       fetchNet();
     }
+    if (!document.hidden && logsEl) { fetchLogs(); }
   });
 
   function buildNetwork(page, head) {
@@ -2048,6 +4517,7 @@
     netDot = status.appendChild(el("i", "status-dot"));
     netAge = status.appendChild(el("span"));
     head.appendChild(acts);
+    page.classList.add("network");
     netEl = page.appendChild(el("div"));
     drawNet();
     fetchNet();
@@ -2055,18 +4525,90 @@
   }
 
   /* ---- one floating tooltip for every [data-tip] ---- */
-  function showTip(el) {
+  function showTip(el, point) {
     if (el.classList.contains("nav-row") && state() === "expanded") { return; }
     if (settings.tips === "off") { return; }
     var text = el.getAttribute("data-tip");
     if (!text) { return; }
-    tip.textContent = text;
-    if (el.getAttribute("data-kbd")) {
-      var k1 = document.createElement("span");
-      k1.className = "kbd"; k1.textContent = KBD;
-      var k2 = document.createElement("span");
-      k2.className = "kbd"; k2.textContent = "\\";
-      tip.appendChild(k1); tip.appendChild(k2);
+    tip.className = "";
+    tip.style.removeProperty("--tip-tone");
+    tip.textContent = "";
+    var circuitTitle = el.getAttribute("data-tip-title");
+    if (circuitTitle) {
+      var tone = el.getAttribute("data-tip-tone") || "idle";
+      tip.className = "circuit-tip tone-" + tone;
+      var colorSource = el.querySelector(".net-map-route-line:not(.idle):not(.unmeasured)")
+        || el.querySelector(".net-map-route-line")
+        || el.querySelector(".net-map-card-bg")
+        || el.querySelector(".net-map-station-value")
+        || el.querySelector(".net-map-egress-core")
+        || el.querySelector(".net-map-ec2-body")
+        || el.querySelector(".net-map-switch-contact");
+      if (colorSource) {
+        var colorStyle = getComputedStyle(colorSource);
+        var sourceColor = colorSource.classList.contains("net-map-station-value")
+          ? colorStyle.fill : colorStyle.stroke;
+        if (sourceColor && sourceColor !== "none") {
+          tip.style.setProperty("--tip-tone", sourceColor);
+        }
+      }
+      tip.appendChild(document.createElement("div")).className = "circuit-tip-accent";
+      var tipHead = tip.appendChild(document.createElement("div"));
+      tipHead.className = "circuit-tip-head";
+      var identity = tipHead.appendChild(document.createElement("div"));
+      identity.className = "circuit-tip-identity";
+      var tipTitle = identity.appendChild(document.createElement("div"));
+      tipTitle.className = "circuit-tip-title";
+      tipTitle.textContent = circuitTitle;
+      var subtitle = el.getAttribute("data-tip-subtitle");
+      if (subtitle) {
+        var tipSub = identity.appendChild(document.createElement("div"));
+        tipSub.className = "circuit-tip-sub";
+        tipSub.textContent = subtitle;
+      }
+      var tipState = tipHead.appendChild(document.createElement("div"));
+      tipState.className = "circuit-tip-state";
+      tipState.textContent = el.getAttribute("data-tip-status") || "Status";
+      var stats = [];
+      try { stats = JSON.parse(el.getAttribute("data-tip-stats") || "[]"); } catch (ignore) { stats = []; }
+      if (stats.length) {
+        var readings = tip.appendChild(document.createElement("div"));
+        readings.className = "circuit-tip-readings";
+        var readingsHead = readings.appendChild(document.createElement("div"));
+        readingsHead.className = "circuit-tip-readings-head";
+        readingsHead.appendChild(document.createElement("span")).textContent = "Recorded Readings";
+        readingsHead.appendChild(document.createElement("span")).textContent = "Latest Sample";
+        var tipGrid = readings.appendChild(document.createElement("div"));
+        tipGrid.className = "circuit-tip-grid";
+        stats.forEach(function (stat) {
+          var row = tipGrid.appendChild(document.createElement("div"));
+          row.className = "circuit-tip-row";
+          var key = row.appendChild(document.createElement("span"));
+          key.className = "circuit-tip-key";
+          key.textContent = stat[0];
+          var value = row.appendChild(document.createElement("span"));
+          value.className = "circuit-tip-value";
+          value.textContent = stat[1];
+        });
+      }
+      var detail = el.getAttribute("data-tip-detail");
+      if (detail) {
+        var tipDetail = tip.appendChild(document.createElement("div"));
+        tipDetail.className = "circuit-tip-detail";
+        var detailTitle = tipDetail.appendChild(document.createElement("div"));
+        detailTitle.className = "circuit-tip-detail-title";
+        detailTitle.textContent = "What This Means";
+        tipDetail.appendChild(document.createElement("div")).textContent = detail;
+      }
+    } else {
+      tip.textContent = text;
+      if (el.getAttribute("data-kbd")) {
+        var k1 = document.createElement("span");
+        k1.className = "kbd"; k1.textContent = KBD;
+        var k2 = document.createElement("span");
+        k2.className = "kbd"; k2.textContent = "\\";
+        tip.appendChild(k1); tip.appendChild(k2);
+      }
     }
     var r = el.getBoundingClientRect();
     tip.style.left = "0px";
@@ -2074,9 +4616,12 @@
     var z = zoomFactor();
     tip.style.maxWidth = Math.max(160, Math.min(360, window.innerWidth / z - 16)) + "px";
     tip.setAttribute("aria-hidden", "false");
-    tip.style.left = Math.round(Math.max(8, Math.min(r.right + 10,
+    var preferredLeft = point && circuitTitle ? point.x + 14 : r.right + 10;
+    tip.style.left = Math.round(Math.max(8, Math.min(preferredLeft,
       window.innerWidth - tip.offsetWidth * z - 8)) / z) + "px";
-    var tipTop = (r.top + r.height / 2) / z - tip.offsetHeight / 2;
+    var tipTop = point && circuitTitle
+      ? point.y / z + 14
+      : (r.top + r.height / 2) / z - tip.offsetHeight / 2;
     tip.style.top = Math.round(Math.max(8 / z,
       Math.min(tipTop, window.innerHeight / z - tip.offsetHeight - 8 / z))) + "px";
     tip.classList.add("on");
@@ -2093,7 +4638,8 @@
       ? ev.target.closest("[data-tip]") : null;
     if (!el) { return; }
     if (tipTimer) { clearTimeout(tipTimer); }
-    tipTimer = setTimeout(function () { showTip(el); }, 150);
+    var point = { x: ev.clientX, y: ev.clientY };
+    tipTimer = setTimeout(function () { showTip(el, point); }, 120);
   });
   document.addEventListener("mouseout", function (ev) {
     var el = ev.target && ev.target.closest
@@ -2103,322 +4649,6 @@
     hideTip();
   });
   document.addEventListener("scroll", hideTip, true);
-
-  /* ---- global search: opens on focus, grouped results, arrow/enter
-     keys, ⌘K focus, dim click or blur closes. Index = the pages. ---- */
-  var qsWrap = document.getElementById("qsearch");
-  var qsBox = document.getElementById("qsearch-box");
-  var qsInput = document.getElementById("qsearch-input");
-  var qsKbd = document.getElementById("qsearch-k");
-  var qsPop = document.getElementById("qsearch-pop");
-  var qsDim = document.getElementById("qsearch-dim");
-  qsDim.addEventListener("mousedown", function (ev) {
-    ev.preventDefault();
-    qsClose();
-  });
-  var qsQ = "";
-  var qsSel = 0;
-  var qsOpen = false;
-  var qsResults = [];
-
-  var QS_PAGES = [
-    { label: "Overview", hint: "Money page — empty by decision", page: "overview",
-      keywords: "overview money pnl equity home dashboard" },
-    { label: "Account", hint: "Not built yet", page: "account",
-      keywords: "account balances wallet spot futures margin funds" },
-    { label: "Markets", hint: "Not built yet", page: "markets",
-      keywords: "markets pairs symbols prices tickers" },
-    { label: "Basis", hint: "Not built yet", page: "basis",
-      keywords: "basis spread carry premium funding" },
-    { label: "Volume", hint: "Not built yet", page: "volume",
-      keywords: "volume turnover flow" },
-    { label: "Machine", hint: "Not built yet", page: "machine",
-      keywords: "machine host server health" },
-    { label: "Logs", hint: "Not built yet", page: "logs",
-      keywords: "logs runs history output" },
-    { label: "News", hint: "Headlines, sources, activity", page: "news",
-      keywords: "news headlines sources feed articles" },
-    { label: "Network", hint: "Connections and their history", page: "network",
-      keywords: "network latency probe connections binance" },
-    { label: "Settings", hint: "General, notifications, devices", page: "settings",
-      keywords: "settings preferences general" }
-  ];
-
-  var QS_SETTINGS = [
-    ["Theme", "General", "light dark system appearance"],
-    ["Accent", "General", "colour color highlight focus"],
-    ["Interface scale", "General", "zoom size bigger smaller"],
-    ["Motion", "General", "animations reduced"],
-    ["Density", "General", "compact comfortable rows spacing"],
-    ["Font", "General", "inter system typeface"],
-    ["Language", "General", "english hindi chinese spanish french formats"],
-    ["Clock", "General", "time zone ist utc london new york tokyo"],
-    ["Time format", "General", "24-hour 12-hour am pm"],
-    ["Sidebar", "General", "collapsed expanded"],
-    ["Default landing page", "General", "start home open"],
-    ["Basis unit", "General", "percent bps basis points"],
-    ["Currency", "General", "usd eur gbp inr jpy money"],
-    ["Show seconds", "General", "clock seconds"],
-    ["Clock date", "General", "day month date"],
-    ["Striped tables", "General", "zebra rows shading"],
-    ["Tooltips", "General", "hints hover"],
-    ["Font smoothing", "General", "antialiasing macos"],
-    ["Keep screen awake", "General", "sleep wake lock"],
-    ["Confirm device logout", "General", "ask confirm"],
-    ["Browser notifications", "Notifications", "permission enable alerts"],
-    ["Device sign-ins", "Notifications", "alert new device login"],
-    ["Device logouts", "Notifications", "alert logout"],
-    ["Sound", "Notifications", "tone beep alert"],
-    ["When", "Notifications", "always background alerts"]
-  ];
-
-  function qsOpenSettings(tab) {
-    settings.tab = tab;
-    saveSettings();
-    if (location.hash === "#settings") { route(); } else { location.hash = "#settings"; }
-  }
-
-  var qsField = document.createElement("input");
-  var qsList = document.createElement("div");
-  var qsCount = document.createElement("span");
-  (function () {
-    var row = document.createElement("div");
-    row.className = "ssr-input-row";
-    row.appendChild(qsBox.querySelector("svg").cloneNode(true));
-    qsField.className = "ssr-field";
-    qsField.placeholder = "Search pages, settings, devices, news…";
-    qsField.setAttribute("aria-label", "Search the site");
-    row.appendChild(qsField);
-    var esc = document.createElement("kbd");
-    esc.className = "ssr-kbd";
-    esc.textContent = "esc";
-    row.appendChild(esc);
-    qsList.className = "ssr-list";
-    var foot = document.createElement("div");
-    foot.className = "ssr-foot";
-    [["↑↓", "navigate"], ["↵", "open"], ["esc", "close"]].forEach(function (pair) {
-      var s = document.createElement("span");
-      var k = document.createElement("kbd");
-      k.className = "ssr-kbd";
-      k.textContent = pair[0];
-      s.appendChild(k);
-      s.appendChild(document.createTextNode(pair[1]));
-      foot.appendChild(s);
-    });
-    var grow = document.createElement("span");
-    grow.className = "grow";
-    foot.appendChild(grow);
-    foot.appendChild(qsCount);
-    qsPop.appendChild(row);
-    qsPop.appendChild(qsList);
-    qsPop.appendChild(foot);
-  })();
-
-  function qsPalette() {
-    if (!qsOpen) {
-      qsOpen = true;
-      qsQ = "";
-      qsField.value = "";
-      qsSel = 0;
-      if (!newsData) { try { fetchNews(); } catch (e) { /* news page code absent */ } }
-      qsRender();
-    }
-    qsField.focus();
-  }
-
-  function qsClose() {
-    if (!qsOpen) { return; }
-    qsOpen = false;
-    qsRender();
-  }
-
-  function qsScore(ql, label, extra) {
-    var l = label.toLowerCase();
-    if (l.indexOf(ql) === 0) { return 0; }
-    if (l.indexOf(ql) !== -1) { return 1; }
-    if (extra && extra.toLowerCase().indexOf(ql) !== -1) { return 2; }
-    return -1;
-  }
-
-  function qsCompute() {
-    var ql = qsQ.trim().toLowerCase();
-    var out = [];
-    var i;
-    if (!ql) {
-      for (i = 0; i < QS_PAGES.length; i++) {
-        var pe = QS_PAGES[i];
-        out.push({ group: "Pages", label: pe.label, hint: pe.hint, icon: pe.page,
-          go: (function (pg) { return function () { location.hash = "#" + pg; }; })(pe.page) });
-      }
-      return out;
-    }
-    var scored = [];
-    for (i = 0; i < QS_PAGES.length; i++) {
-      var e = QS_PAGES[i];
-      var s = qsScore(ql, e.label, e.hint + " " + e.keywords);
-      if (s >= 0) {
-        scored.push({ s: s, r: { group: "Pages", label: e.label, hint: e.hint, icon: e.page,
-          go: (function (pg) { return function () { location.hash = "#" + pg; }; })(e.page) } });
-      }
-    }
-    for (i = 0; i < QS_SETTINGS.length; i++) {
-      var st = QS_SETTINGS[i];
-      var s2 = qsScore(ql, st[0], st[1] + " " + st[2]);
-      if (s2 >= 0) {
-        scored.push({ s: s2 + 3, r: { group: "Settings", label: st[0], hint: st[1] + " setting", icon: "settings",
-          go: (function (tab) { return function () { qsOpenSettings(tab); }; })(st[1]) } });
-      }
-    }
-    var s3 = qsScore(ql, "Devices", "device sessions sign-ins logout");
-    if (s3 >= 0) {
-      scored.push({ s: s3 + 6, r: { group: "Devices", label: "Devices",
-        hint: "Signed-in devices", icon: "settings",
-        go: function () { qsOpenSettings("Devices"); } } });
-    }
-    var nw = 0;
-    var items = newsData && newsData.items ? newsData.items : [];
-    for (i = 0; i < items.length && nw < 8; i++) {
-      var it = items[i];
-      var s4 = qsScore(ql, it.title || "", (it.source || "") + " " + (it.category || ""));
-      if (s4 >= 0) {
-        nw++;
-        scored.push({ s: s4 + 9, r: { group: "News", label: it.title,
-          hint: (it.source || "") + (it.category ? " · " + it.category : ""), icon: "news",
-          go: (function (u) { return function () { if (u) { window.open(u, "_blank", "noopener"); } else { location.hash = "#news"; } }; })(it.url) } });
-      }
-    }
-    scored.sort(function (a, b) { return a.s - b.s; });
-    for (i = 0; i < scored.length; i++) { out.push(scored[i].r); }
-    return out;
-  }
-
-  function qsGo(e) {
-    if (!e) { return; }
-    e.go();
-    qsClose();
-  }
-
-  function qsRowEl(e, i) {
-    var row = document.createElement("button");
-    row.type = "button";
-    row.className = "ssr-row" + (i === qsSel ? " sel" : "");
-    var mark = document.createElement("span");
-    mark.className = "ssr-mark";
-    var src = document.querySelector('.nav-row[data-page="' + e.icon + '"] svg');
-    if (src) { mark.appendChild(src.cloneNode(true)); }
-    var asset = document.createElement("span");
-    asset.className = "ssr-asset";
-    var lb = document.createElement("span");
-    lb.className = "ssr-label";
-    lb.textContent = e.label;
-    var ht = document.createElement("span");
-    ht.className = "ssr-hint";
-    ht.textContent = e.hint;
-    asset.appendChild(lb);
-    asset.appendChild(ht);
-    var right = document.createElement("span");
-    right.className = "ssr-action";
-    right.appendChild(document.createTextNode("Open"));
-    var rk = document.createElement("kbd");
-    rk.className = "ssr-kbd";
-    rk.textContent = "↵";
-    right.appendChild(rk);
-    row.appendChild(mark);
-    row.appendChild(asset);
-    row.appendChild(right);
-    row.setAttribute("data-i", String(i));
-    row.addEventListener("mouseenter", function () {
-      if (qsSel !== i) {
-        qsSel = i;
-        var all = qsList.querySelectorAll(".ssr-row");
-        for (var r = 0; r < all.length; r++) {
-          all[r].classList.toggle("sel",
-            all[r].getAttribute("data-i") === String(i));
-        }
-      }
-    });
-    row.addEventListener("mousedown", function (ev) {
-      if (ev.button === 0) { ev.preventDefault(); }
-    });
-    row.addEventListener("click", function () {
-      qsGo(e);
-    });
-    return row;
-  }
-
-  function qsRender() {
-    qsWrap.classList.toggle("open", qsOpen);
-    qsBox.classList.toggle("on", qsOpen);
-    qsPop.hidden = !qsOpen;
-    qsDim.hidden = !qsOpen;
-    if (!qsOpen) { return; }
-    qsResults = qsCompute();
-    qsList.textContent = "";
-    qsCount.textContent = qsResults.length + (qsResults.length === 1 ? " result" : " results");
-    if (!qsResults.length) {
-      var none = document.createElement("div");
-      none.className = "ssr-empty";
-      none.textContent = "No matches across pages, settings, devices or the loaded news.";
-      qsList.appendChild(none);
-      return;
-    }
-    var lastGroup = "";
-    for (var i = 0; i < qsResults.length; i++) {
-      if (qsResults[i].group !== lastGroup) {
-        lastGroup = qsResults[i].group;
-        var gt = document.createElement("div");
-        gt.className = "ssr-group-title";
-        gt.textContent = lastGroup;
-        qsList.appendChild(gt);
-      }
-      qsList.appendChild(qsRowEl(qsResults[i], i));
-    }
-    var selEl = qsList.querySelector(".ssr-row.sel");
-    if (selEl && selEl.scrollIntoView) {
-      selEl.scrollIntoView({ block: "nearest" });
-    }
-  }
-
-  qsInput.readOnly = true;
-  qsInput.addEventListener("focus", function () {
-    qsInput.blur();
-    qsPalette();
-  });
-  qsBox.addEventListener("mousedown", function (ev) {
-    ev.preventDefault();
-    qsPalette();
-  });
-  qsField.addEventListener("blur", function () { qsClose(); });
-  qsField.addEventListener("input", function () {
-    qsQ = qsField.value;
-    qsSel = 0;
-    qsRender();
-  });
-  qsField.addEventListener("keydown", function (ev) {
-    if (ev.key === "ArrowDown") {
-      ev.preventDefault();
-      if (!qsResults.length) { return; }
-      qsSel = Math.min(qsSel + 1, qsResults.length - 1);
-      qsRender();
-    } else if (ev.key === "ArrowUp") {
-      ev.preventDefault();
-      if (!qsResults.length) { return; }
-      qsSel = Math.max(qsSel - 1, 0);
-      qsRender();
-    } else if (ev.key === "Enter") {
-      qsGo(qsResults[qsSel]);
-    } else if (ev.key === "Escape") {
-      ev.stopPropagation();
-      qsClose();
-    }
-  });
-  qsKbd.addEventListener("click", function () { qsPalette(); });
-  document.addEventListener("keydown", function (ev) {
-    if ((ev.key === "k" || ev.key === "K") && ev.metaKey) {
-      ev.preventDefault();
-      qsPalette();
-    }
-  });
 
   /* boot the router last */
   window.addEventListener("hashchange", route);

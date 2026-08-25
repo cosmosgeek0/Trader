@@ -1,0 +1,21 @@
+[Unit]
+Description=Trader news
+After=network.target
+
+[Service]
+User=trader-data
+Group=trader-data
+StateDirectory=trader-news
+StateDirectoryMode=0750
+UMask=0027
+RuntimeDirectory=trader-news
+BindReadOnlyPaths=/home/ssm-user/Trader/server/news.py:/run/trader-news/news.py
+ExecStart=/usr/bin/python3 /run/trader-news/news.py
+Restart=on-failure
+RestartSec=5
+ProtectHome=yes
+ProtectSystem=strict
+IPAddressDeny=169.254.169.254
+
+[Install]
+WantedBy=multi-user.target

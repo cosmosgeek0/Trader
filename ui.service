@@ -1,0 +1,47 @@
+[Unit]
+Description=Trader UI
+After=network.target
+
+[Service]
+User=trader-ui
+Group=trader-ui
+SupplementaryGroups=trader-data
+WorkingDirectory=/run/trader-ui-server
+ExecStart=/usr/bin/python3 /run/trader-ui-server/serve.py
+Restart=on-failure
+RuntimeDirectory=trader-ui-server trader-ui-site trader-ui-socket
+RuntimeDirectoryMode=0750
+StateDirectory=trader-ui
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+BindReadOnlyPaths=/home/ssm-user/Trader/server/serve.py:/run/trader-ui-server/serve.py
+BindReadOnlyPaths=/home/ssm-user/Trader/server/access.py:/run/trader-ui-server/access.py
+BindReadOnlyPaths=/home/ssm-user/Trader/ui:/run/trader-ui-site
+ReadWritePaths=/var/lib/trader-news-control/enabled
+ReadWritePaths=/var/lib/trader-rules
+InaccessiblePaths=/home/ssm-user/secret-id.txt
+InaccessiblePaths=/home/ssm-user/Trader/trader.py /home/ssm-user/Trader/binance.py /home/ssm-user/Trader/basis.py /home/ssm-user/Trader/market.py /home/ssm-user/Trader/account.py
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

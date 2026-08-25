@@ -11,23 +11,19 @@ The owner gives the only current capability, money amount, and execution path in
 ## Project
 
 - Repository: `https://github.com/cosmosgeek0/Trader`. Local root: `/Users/cosmosgeek/Desktop/Trader`. Start and work only inside it.
-- `ui/` is the frontend; money code never lives there.
-- Run the UI only as `trader-ui` through `ui.service`. Its only writable state is `/var/lib/trader-ui/logins.json`; never put login data inside the public `ui/` directory.
-- Cloudflare reaches the UI only through `/run/trader-ui-socket/ui.sock`; never restore a TCP listener. The `cloudflared` user belongs to the `trader-ui` group only to open that socket.
-- The UI process must remain unable to read `secret-id.txt` or the trading Python files and unable to reach EC2 instance metadata or Binance. Do not weaken the boundaries in `ui.service`.
-- Keep every Devices row, show 20 per numbered page, log out only the selected device, and reuse its row after it signs in again. Do not replace device logout with broad Cloudflare logout.
+- `ui/` is public frontend only; `server/` is the UI backend. Ordinary frontend work changes only `ui/`; review or deploy `server/` and the service files only when the task changes backend behavior. Money code never lives in either.
+- `ACCESS.md`, `server/access.py`, `ui/devices.js`, and `ui.service` are the login, Devices, and access boundary. For news, network, styling, layout, and other ordinary UI work, do not read, search, review, edit, deploy, or include them in critic packets. Read these files only when the current task changes login, Devices, access, or `ui.service` runtime settings; then `ACCESS.md` governs that work.
 - Live code runs on AWS EC2 `i-0e87fe0e7ba2063a9` in `ap-south-1` through AWS SSM.
 - Reach the host with `ssh cosmos 'COMMAND'`; copy files with `scp LOCAL_FILE cosmos:REMOTE_PATH`. Both are already configured on this Mac.
 - The live Binance account is reached only from that host.
 - Binance credentials already exist in AWS Secrets Manager. Never search for, copy, print, log, or store them.
-- On the host, `/home/ssm-user/secret-id.txt` contains only the Secrets Manager secret ID. Server code retrieves the secret in `ap-south-1` without emitting it. Its JSON fields are `BINANCE_API_KEY` and `BINANCE_API_SECRET`.
 - Use `https://arbitrage.cosmosgeek.org/` only when the current task requires it. Use the owner's connected Chrome session; do not open another login.
 - Deploy only the finished Python files required by the current capability to `/home/ssm-user/Trader/` with `scp`.
 - For a financial action, write the exact AWS command once in local `run.txt` as `cd /home/ssm-user/Trader && python3` followed by the deployed filename and arguments. `run.txt` is only the owner's handoff.
 - Do not run, read, rewrite, copy, or deploy `run.txt`. The owner will run it within ten seconds; do not stop or ask the owner. Wait ten seconds, read `output.txt` once, verify Binance once, then continue. The first line of `output.txt` is the runner's exit status, not program output. A long-running command truncates `output.txt` at start and writes it once at the end; wait for that write.
 - Read-only commands may be run directly with `ssh cosmos`. Every command that moves money, places an order, or cancels one runs only through `run.txt`.
 - Unrelated balances, Earn balances, and dust are not Trader working capital. Do not move, trade, borrow against, repay with, or sweep them unless the owner explicitly names them.
-- Only one worker edits the repository at a time. A new worker starts from this file, the complete current code, and the last live output; no handover documents.
+- Only one worker edits the repository at a time. A new worker starts from this file, the complete code required by the current chat, and the last live output; no handover documents.
 - Cloudflare, UI, old repositories, parent folders, Desktop files other Desktop files outside this repository, memories, state files, handovers, evidence, Git history, and old instructions are not Trader context unless the owner names an exact item.
 - The current chat instruction is the only task. Do not invent or search for additional context.
 
@@ -57,7 +53,7 @@ The owner gives the only current capability, money amount, and execution path in
 ## Build and verify
 
 - When the chat names several capabilities, build them strictly in the named order. Complete, live-test, review, and correct one before writing the next.
-- Before each capability, reread `AGENTS.md` and the complete current Python program.
+- Before each capability, reread `AGENTS.md` and the complete current code for that capability.
 - Before editing, state the capability, files, functions, why each change is needed, and the rough net line change.
 - Stop before writing if the solution is unexpectedly large or needs an additional permanent file, class, dependency, abstraction, or parallel implementation.
 - After writing, reread the complete changed flow.
@@ -75,8 +71,8 @@ The owner gives the only current capability, money amount, and execution path in
 
 - After each capability passes live, run one independent Sol 5.6 Max critic.
 - Run the critic locally: `codex exec -m gpt-5.6-sol -c 'service_tier="priority"' -s read-only --skip-git-repo-check` with the complete packet on stdin. Never use a Claude sub-agent as the critic. Trust the verdict only after the printed session header confirms model gpt-5.6-sol with max reasoning.
-- The critic reads `AGENTS.md`, every active file reachable from `trader.py`, the exact change, and the live output.
-- The packet is one self-contained text: this file verbatim, the owner's task verbatim, every active file in full, the exact change with before and after code, all live output including failed runs, and prior rounds' adjudicated results. Never include the builder's own review or conclusions.
+- The critic reads `AGENTS.md`, every active file the change touches and the files they import, excluding the access boundary unless the current task changes it, plus the exact change and live output.
+- The packet is one self-contained text: this file verbatim, the owner's task verbatim, every file in that set in full, the exact change with before and after code, all live output including failed runs, and prior rounds' adjudicated results. Never include the builder's own review or conclusions.
 - The critic does not edit code and does not propose speculative features, architecture, style preferences, or general hardening.
 - Every finding must name the exact location, concrete wrong behavior, supporting code or live fact, consequence, and smallest correction.
 - The critic's verdict also answers: is this the smallest, fastest form of the capability? Structure beyond that is a concrete defect, not a style preference.

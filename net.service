@@ -1,0 +1,22 @@
+[Unit]
+Description=Trader network probe
+After=network.target
+
+[Service]
+User=trader-data
+Group=trader-data
+SupplementaryGroups=trader-ui
+StateDirectory=trader-net
+StateDirectoryMode=0750
+UMask=0027
+RuntimeDirectory=trader-net
+BindReadOnlyPaths=/home/ssm-user/Trader/server/net.py:/run/trader-net/net.py
+ExecStart=/usr/bin/python3 /run/trader-net/net.py
+Restart=on-failure
+RestartSec=5
+ProtectHome=yes
+ProtectSystem=strict
+IPAddressDeny=169.254.169.254
+
+[Install]
+WantedBy=multi-user.target

@@ -185,6 +185,10 @@ def board(argv):
     pool_at = 0.0
     day = {}
     day_at = 0.0
+    hour = {}
+    hour_at = 0.0
+    anchors = []
+    mark = False
     try:
         while True:
             if time.time() - pool_at > 30:
@@ -195,9 +199,22 @@ def board(argv):
                 day = {("s", t["symbol"]): t for t in public(SPOT + "/api/v3/ticker/24hr")}
                 day.update({("f", t["symbol"]): t for t in public(FAPI + "/fapi/v1/ticker/24hr")})
                 day_at = time.time()
+                mark = True
+            if time.time() - hour_at > 180:
+                names = sorted(spots)
+                hour = {}
+                for i in range(0, len(names), 100):
+                    for t in public(SPOT + "/api/v3/ticker?windowSize=1h&symbols=" + urllib.parse.quote(
+                            json.dumps(names[i:i + 100], separators=(",", ":"), ensure_ascii=False))):
+                        hour[t["symbol"]] = Decimal(t["quoteVolume"])
+                hour_at = time.time()
             sb = {t["symbol"]: t for t in public(SPOT + "/api/v3/ticker/bookTicker") if t["symbol"] in spots}
             fb = {t["symbol"]: t for t in public(FAPI + "/fapi/v1/ticker/bookTicker") if t["symbol"] in perps}
             prem = {p["symbol"]: p for p in public(FAPI + "/fapi/v1/premiumIndex") if p["symbol"] in perps}
+            back = min((a for a in anchors if time.time() - a[0] >= 3300),
+                       key=lambda a: abs(time.time() - a[0] - 3600), default=None)
+            if back:
+                back = (time.time() - back[0], back[1])
             rows = []
             for sym in tokens:
                 fsym, mult = fut_of.get(sym, (None, 1))
@@ -228,10 +245,18 @@ def board(argv):
                     r.update(fvol=round(float(fd["quoteVolume"])), fchg=float(fd["priceChangePercent"]), ftrades=fd["count"])
                 if sd and fd and float(sd["quoteVolume"]) > 0:
                     r["ratio"] = round(float(fd["quoteVolume"]) / float(sd["quoteVolume"]), 2)
+                if sd and sym in hour and float(sd["quoteVolume"]) > 0:
+                    r["v1x"] = round(float(hour[sym]) * 24 / float(sd["quoteVolume"]), 1)
+                if back and sym in back[1] and "ngap" in r:
+                    r["bh"] = round((r["ngap"] - back[1][sym]) * 3600 / back[0], 4)
                 rows.append(r)
-            with open("board.tmp", "w") as out:
+            with open("/var/lib/trader-board/board.tmp", "w") as out:
                 json.dump({"at": int(time.time() * 1000), "count": count, "rows": rows}, out)
-            os.replace("board.tmp", "board.json")
+            os.replace("/var/lib/trader-board/board.tmp", "/var/lib/trader-board/board.json")
+            if mark:
+                anchors.append((time.time(), {r["sym"]: r["ngap"] for r in rows if "ngap" in r}))
+                anchors = [a for a in anchors if time.time() - a[0] <= 4200]
+                mark = False
             lead_r = sorted([r for r in rows if "rgap" in r and r["pool"]], key=lambda r: r["rgap"], reverse=True)[:5]
             lead_n = sorted([r for r in rows if "ngap" in r], key=lambda r: r["ngap"], reverse=True)[:5]
             print(time.strftime("%H:%M:%S") + f" {count['total']} tokens ({count['both']} both, {count['spot']} spot-only, "

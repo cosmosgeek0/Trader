@@ -1124,6 +1124,7 @@
 
   function drawStatus() {
     if (!netEl) { return false; }
+    netEl.classList.toggle("net-off", !netView.on);
     if (!netView.on) {
       netDot.className = "status-dot";
       netAge.textContent = "Off";
@@ -1132,7 +1133,7 @@
     var age = netData ? Math.round((Date.now() - netData.at) / 1000) : 0;
     var stale = !netOk || !netData || age > netData.every * 3;
     netDot.className = "status-dot " + (!netOk ? "dead" : !netData ? "" : stale ? "stale" : "live");
-    netAge.textContent = !netOk ? "Offline" : !netData ? "" : (stale ? "Stale · " : "Live · ") + reading(age, "s");
+    netAge.textContent = !netOk ? "Offline" : !netData ? "" : stale ? "Stale" : "Live";
     return stale;
   }
 
@@ -1146,10 +1147,6 @@
     netEl.textContent = "";
     netPlot = null;
     netMap = null;
-    if (!netView.on) {
-      netEl.appendChild(el("div", "page-sub", "Off — the probe keeps recording on the box."));
-      return;
-    }
     if (!netData) {
       netEl.appendChild(el("div", "page-sub", "No samples yet."));
       netMap = netEl.appendChild(el("section", "net-map"));
@@ -1173,14 +1170,14 @@
     views.forEach(function (view) {
       var pill = el("button", "news-pill" + (view.key === netView.tab ? " on" : ""), view.label);
       pill.setAttribute("aria-pressed", view.key === netView.tab ? "true" : "false");
-      pill.addEventListener("click", function () { netView.tab = view.key; saveNet(); drawNet(); });
+      pill.addEventListener("click", function () { netView.tab = view.key; netView.pick = null; saveNet(); drawNet(); });
       pills.appendChild(pill);
     });
-    var seg = el("div", "set-seg");
+    var seg = el("div", "net-range");
     seg.setAttribute("role", "group");
     seg.setAttribute("aria-label", "Network history range");
     [[1, "1H"], [6, "6H"], [24, "24H"]].forEach(function (o) {
-      var b = el("button", "set-seg-btn" + (netView.range === o[0] ? " on" : ""), o[1]);
+      var b = el("button", "net-range-btn" + (netView.range === o[0] ? " on" : ""), o[1]);
       b.setAttribute("aria-pressed", netView.range === o[0] ? "true" : "false");
       b.addEventListener("click", function () { netView.range = o[0]; saveNet(); drawNet(); });
       seg.appendChild(b);
@@ -1204,6 +1201,7 @@
     if (!netData) { return []; }
     var view = NET_VIEWS.filter(function (item) { return item.key === netView.tab; })[0];
     var keys = view && view.series ? view.series : [netView.tab];
+    if (netView.pick && keys.indexOf(netView.pick) !== -1) { keys = [netView.pick]; }
     return keys.map(function (key) { return netData.series[key]; }).filter(Boolean);
   }
 
@@ -1240,58 +1238,83 @@
     if (!netEl || !netPlot) { return; }
     netPlot.textContent = "";
     if (!series.length) { return; }
+    var view = NET_VIEWS.filter(function (item) { return item.key === netView.tab; })[0];
+    var keys = view && view.series ? view.series : [netView.tab];
+    var tabShift = Math.max(NET_VIEWS.indexOf(view), 0);
+    var palette = ["#3b82f6", "#2ebd85", "#8b5cf6", "#d9a52b", "#22b8cf", "#ec4899"];
+    var tabSeries = keys.map(function (key) { return netData.series[key]; });
+    var chips = netPlot.appendChild(el("div", "net-legend" + (netView.pick ? " picked" : "")));
+    tabSeries.forEach(function (s, index) {
+      var chip = el("button", "net-chip" + (netView.pick === keys[index] ? " on" : ""));
+      var dot = el("span", "net-chip-dot");
+      dot.style.background = palette[(index + tabShift) % palette.length];
+      chip.appendChild(dot);
+      chip.appendChild(document.createTextNode(s.label));
+      chip.addEventListener("click", function () {
+        netView.pick = netView.pick === keys[index] ? null : keys[index];
+        saveNet();
+        graph(netSeries());
+      });
+      chips.appendChild(chip);
+    });
     var hours = netView.range;
     var now = Date.now() / 1000;
-    var from = now - hours * 3600;
-    var t = netData.t;
-    var first = t.length;
-    for (var i = 0; i < t.length; i++) { if (t[i] >= from) { first = i; break; } }
-    var values = [];
-    var failed = false;
-    series.forEach(function (s) {
-      for (var vi = first; vi < t.length; vi++) {
-        if (!s.since || t[vi] >= s.since) {
-          if (typeof s.values[vi] === "number") { values.push(s.values[vi]); }
-          else if (s.values[vi] === null) { failed = true; }
-        }
-      }
-    });
-    if (!values.length) {
-      if (failed) { values.push(0); }
-      else {
-        netPlot.appendChild(el("div", "page-sub", "No samples in this range."));
-        netPlace = null;
-        return;
-      }
-    }
-    values.sort(function (a, b) { return a - b; });
-    var lo = values[0];
-    var hi = values[values.length - 1];
-    var step = niceCeil(Math.max((hi - lo) / 5, hi * 0.02, 0.5));
-    var bottom = Math.max(0, Math.floor((lo - step / 2) / step) * step);
-    var ceilTop = Math.ceil((hi + step / 5) / step) * step;
-    while ((ceilTop - bottom) / step < 4) {
-      if (bottom > 0) { bottom = Math.max(0, bottom - step); }
-      ceilTop += step;
-    }
-    var rows = Math.round((ceilTop - bottom) / step);
     var W = Math.max(netPlot.clientWidth, 860);
     var H = 380;
-    var gutter = 56, right = 8;
+    var gutter = 44, right = 0;
     var plotW = Math.max(W - gutter - right, 1);
     var top = 38, axisH = 24;
     var plotH = H - top - axisH;
     var base = top + plotH;
+    var major = hours === 1 ? 300 : hours === 6 ? 1800 : 7200;
+    while (hours * 3600 / major > plotW / 62) { major *= 2; }
+    var from = now - hours * 3600;
+    var t = netData.t;
+    var first = t.length;
+    for (var i = 0; i < t.length; i++) { if (t[i] >= from) { first = i; break; } }
+    var sampled = false;
+    var failed = false;
+    var hiPos = 0;
+    var loPos = Infinity;
+    series.forEach(function (s) {
+      for (var vi = first; vi < t.length; vi++) {
+        if (!s.since || t[vi] >= s.since) {
+          var sv = s.values[vi];
+          if (typeof sv === "number") {
+            sampled = true;
+            if (sv > hiPos) { hiPos = sv; }
+            if (sv > 0 && sv < loPos) { loPos = sv; }
+          } else if (sv === null) { failed = true; }
+        }
+      }
+    });
+    if (!sampled && !failed) {
+      netPlot.appendChild(el("div", "page-sub", "No samples in this range."));
+      netPlace = null;
+      return;
+    }
+    var high = niceCeil(hiPos > 0 ? hiPos : 1);
+    var low = Math.pow(10, Math.floor(Math.log10(hiPos > 0 ? loPos : high)));
+    while (high / low < 100) { low = low / 10; }
+    var marks = [];
+    for (var dec = low; dec <= high * 1.0001; dec *= 10) { marks.push(dec); }
     function x(ts) { return gutter + (ts - from) / (hours * 3600) * plotW; }
-    function y(v) { return base - (v - bottom) / (ceilTop - bottom) * plotH; }
+    var logLow = Math.log10(low);
+    var spread = Math.log10(high) - logLow;
+    var band = plotH / (spread + 1);
+    function y(v) {
+      if (v <= 0) { return base; }
+      return base - band - (Math.log10(v) - logLow) / spread * (plotH - band);
+    }
     var chart = svg("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H,
       "class": "net-graph", role: "img", "aria-label": "Network history graph" });
     chart.appendChild(svg("title", {})).textContent = "Network history · " + hours + " hour" + (hours === 1 ? "" : "s");
     chart.appendChild(svg("desc", {})).textContent = "Time series for "
       + series.map(function (item) { return item.label; }).join(", ") + ". Failures are marked on the time axis.";
     var defs = chart.appendChild(svg("defs", {}));
-    var palette = [ACCENTS[settings.accent], "#8b5cf6", "#2ebd85", "#e0812b"];
-    var colors = series.map(function (_, index) { return palette[index % palette.length]; });
+    var colors = series.map(function (s) {
+      return palette[(Math.max(tabSeries.indexOf(s), 0) + tabShift) % palette.length];
+    });
     var gradients = series.map(function (_, index) {
       var id = "netfade-" + Date.now() + "-" + index;
       var grad = defs.appendChild(svg("linearGradient", { id: id, x1: 0, y1: 0, x2: 0, y2: 1 }));
@@ -1300,25 +1323,27 @@
       grad.appendChild(svg("stop", { offset: 1, "stop-color": colors[index], "stop-opacity": 0 }));
       return id;
     });
-    for (var g = 1; g < rows; g++) {
-      var gv = bottom + step * g;
-      chart.appendChild(svg("line", { x1: gutter, y1: y(gv), x2: W - right, y2: y(gv), "class": "grid" }));
-      chart.appendChild(svg("text", { x: gutter - 8, y: y(gv) + 4, "text-anchor": "end" })).textContent
-        = String(step < 1 ? Math.round(gv * 10) / 10 : Math.round(gv));
-    }
-    var major = hours === 1 ? 300 : hours === 6 ? 1800 : 7200;
-    while (hours * 3600 / major > plotW / 62) { major *= 2; }
-    var local = new Intl.DateTimeFormat("en-US", { timeZone: settings.tz, hour: "numeric", minute: "numeric", hourCycle: "h23" })
-      .format(new Date(now * 1000)).split(":").map(Number);
-    var utc = new Date(now * 1000);
-    var offsetMinutes = local[0] * 60 + local[1] - utc.getUTCHours() * 60 - utc.getUTCMinutes();
-    if (offsetMinutes > 720) { offsetMinutes -= 1440; }
-    if (offsetMinutes < -720) { offsetMinutes += 1440; }
-    var offset = offsetMinutes * 60;
-    for (var m = Math.ceil((from + offset) / major) * major - offset; m <= now; m += major) {
-      chart.appendChild(svg("line", { x1: x(m), y1: top, x2: x(m), y2: base, "class": "grid" }));
-      chart.appendChild(svg("text", { x: Math.min(Math.max(x(m), gutter + 18), W - right - 18),
-        y: H - 6, "text-anchor": "middle" })).textContent = timeFmt.format(new Date(m * 1000));
+    chart.appendChild(svg("text", { x: 0, y: base + 4 })).textContent = "0";
+    marks.forEach(function (gv) {
+      if (y(gv) > top + 6) {
+        chart.appendChild(svg("line", { x1: gutter, y1: y(gv), x2: W, y2: y(gv), "class": "grid" }));
+      }
+      var power = Math.round(Math.log10(gv));
+      chart.appendChild(svg("text", { x: 0, y: y(gv) + 4 })).textContent
+        = power >= 0 ? String(Math.pow(10, power)) : Math.pow(10, power).toFixed(-power);
+    });
+    for (var k = hours * 3600; k >= 0; k -= major) {
+      var tx = gutter + (1 - k / (hours * 3600)) * plotW;
+      if (tx >= gutter + 10 && tx <= W - 10) {
+        chart.appendChild(svg("line", { x1: tx, y1: top, x2: tx, y2: base, "class": "grid" }));
+      }
+      if (k === 0) {
+        chart.appendChild(svg("text", { x: W - 2, y: H - 6, "text-anchor": "end" })).textContent = "now";
+      } else if (tx >= gutter + 30 && tx <= W - 44) {
+        chart.appendChild(svg("text", { x: tx, y: H - 6, "text-anchor": "middle" })).textContent
+          = k < 5400 ? "-" + Math.round(k / 60) + "m"
+            : "-" + String(Math.round(k / 1800) / 2).replace(/\.0$/, "") + "h";
+      }
     }
     var span = Math.max(netData.every, Math.ceil(hours * 3600 * 2 / plotW / netData.every) * netData.every);
     var drawn = [];
@@ -1367,34 +1392,12 @@
       var alert = alerts[slot];
       chart.appendChild(svg("line", { x1: x(alert), y1: base - 12, x2: x(alert), y2: base, "class": "down" }));
     });
-    series.forEach(function (s, index) {
-      var latest = false;
-      if (s === netData.series.browser) {
-        for (var li = t.length - 1; li >= first; li--) {
-          if ((!s.since || t[li] >= s.since) && s.values[li] !== false && s.values[li] !== undefined) {
-            latest = s.values[li];
-            break;
-          }
-        }
-      } else {
-        var probeIndex = t.indexOf(netData.probeAt);
-        if (probeIndex >= first && (!s.since || t[probeIndex] >= s.since)) { latest = s.values[probeIndex]; }
-      }
-      var lx = gutter + index * plotW / series.length;
-      chart.appendChild(svg("circle", { cx: lx + 3, cy: 16, r: 3, "class": "legend-dot",
-        style: "--net-line:" + colors[index] }));
-      var legend = chart.appendChild(svg("text", { x: lx + 12, y: 20, "class": "legend-text" }));
-      legend.textContent = s.label + " " + reading(latest, s.unit)
-        + (series.length === 1 && s.note ? " · " + s.note : "");
-    });
     var mark = chart.appendChild(svg("line", { y1: top, y2: base, "class": "hover", visibility: "hidden" }));
     var snaps = drawn.map(function (item) {
       return chart.appendChild(svg("circle", { r: 4, "class": "dot ring", visibility: "hidden",
         style: "--net-line:" + item.color }));
     });
     var chip = chart.appendChild(svg("g", { "class": "tag", visibility: "hidden" }));
-    var chipRect = chip.appendChild(svg("rect", { y: top + 6, height: 20, rx: 5 }));
-    var chipText = chip.appendChild(svg("text", { y: top + 20 }));
     netPlace = function () {
       var box = netHoverAt && first < t.length ? chart.getBoundingClientRect() : null;
       var inside = box && netHoverAt.x >= box.left + gutter / W * box.width
@@ -1415,31 +1418,56 @@
       mark.setAttribute("x1", px);
       mark.setAttribute("x2", px);
       mark.setAttribute("visibility", "visible");
-      var parts = [clock(t[chosen])];
+      chip.textContent = "";
+      var back = chip.appendChild(svg("rect", { y: top + 6, rx: 6 }));
+      var rows = [{ dot: null, label: clock(t[chosen]), value: "" }];
       drawn.forEach(function (item, index) {
         var raw = item.series.values[chosen];
-        if (item.series.since && t[chosen] < item.series.since || raw === undefined || raw === false) {
-          snaps[index].setAttribute("visibility", "hidden");
-          parts.push(item.series.label + " no sample");
-          return;
-        }
-        snaps[index].setAttribute("visibility", raw === null ? "hidden" : "visible");
-        if (raw !== null) {
+        var off = item.series.since && t[chosen] < item.series.since || raw === undefined || raw === false;
+        snaps[index].setAttribute("visibility", off || raw === null ? "hidden" : "visible");
+        if (!off && raw !== null) {
           snaps[index].setAttribute("cx", px);
           snaps[index].setAttribute("cy", Math.max(y(raw), top + 2));
         }
-        parts.push(item.series.label + " " + reading(raw, item.series.unit));
+        rows.push({ dot: item.color, label: item.series.label, value: reading(raw, item.series.unit) });
         var event = item.series.events && item.series.events[chosen] || 0;
-        if (event) { parts.push(event + (event === 1 ? " issue" : " issues")); }
         var detail = item.series.details && item.series.details[t[chosen]];
-        if (detail) { parts.push(detail.slice(0, 120)); }
+        if (event) {
+          rows.push({ dot: null, label: (event === 1 ? "1 issue" : event + " issues")
+            + (detail ? " · " + detail.slice(0, 60) : ""), value: "" });
+        }
       });
-      chipText.textContent = parts.join(" · ");
-      var w = chipText.getBBox().width + 16;
-      var cx = Math.min(Math.max(px - w / 2, gutter), W - right - w);
-      chipRect.setAttribute("x", cx);
-      chipRect.setAttribute("width", w);
-      chipText.setAttribute("x", cx + 8);
+      var rowH = 18, padX = 10, padY = 9;
+      var made = rows.map(function (row, index) {
+        var ty = top + 15 + padY + rowH * index;
+        var square = row.dot ? chip.appendChild(svg("rect", { y: ty - 8, width: 8, height: 8, rx: 2,
+          style: "fill:" + row.dot })) : null;
+        var name = chip.appendChild(svg("text", { y: ty }));
+        name.textContent = row.label;
+        var value = null;
+        if (row.value) {
+          value = chip.appendChild(svg("text", { y: ty, "text-anchor": "end" }));
+          value.textContent = row.value;
+        }
+        return { square: square, name: name, value: value };
+      });
+      var nameW = 0, valueW = 0;
+      made.forEach(function (m, index) {
+        nameW = Math.max(nameW, (rows[index].dot ? 14 : 0) + m.name.getBBox().width);
+        if (m.value) { valueW = Math.max(valueW, m.value.getBBox().width); }
+      });
+      var boxW = padX * 2 + nameW + (valueW ? 24 + valueW : 0);
+      var boxX = px + 14;
+      if (boxX + boxW > W - right) { boxX = px - 14 - boxW; }
+      if (boxX < gutter) { boxX = gutter; }
+      back.setAttribute("x", boxX);
+      back.setAttribute("width", boxW);
+      back.setAttribute("height", padY * 2 + rowH * rows.length - 4);
+      made.forEach(function (m, index) {
+        if (m.square) { m.square.setAttribute("x", boxX + padX); }
+        m.name.setAttribute("x", boxX + padX + (rows[index].dot ? 14 : 0));
+        if (m.value) { m.value.setAttribute("x", boxX + boxW - padX); }
+      });
       chip.setAttribute("visibility", "visible");
     };
     netPlot.appendChild(chart);
@@ -1554,29 +1582,6 @@
       newsDelayed.value > 0 || newsFailed.value > 0);
     if (typeof newsLive.value === "number" && newsLive.value <= 0) { newsState = "down"; }
     var coreState = worst(originState, tradeState, newsState);
-    var states = [browserState, tunnelState, originState, spotPathState, futuresState, newsState];
-    var liveCount = states.filter(function (state) { return state === "live"; }).length;
-    var warnCount = states.filter(function (state) { return state === "warn"; }).length;
-    var downCount = states.filter(function (state) { return state === "down"; }).length;
-    var unmeasuredCount = states.length - liveCount - warnCount - downCount;
-
-    var head = el("div", "net-map-head");
-    netMap.insertBefore(head, stage || null);
-    var heading = head.appendChild(el("div", "net-map-heading"));
-    heading.appendChild(el("b", "", "Live system circuit"));
-    heading.appendChild(el("span", "",
-      "Public data plane, EC2 workers, live files and the owner-control path"));
-    var summary = head.appendChild(el("div", "net-map-summary"));
-    function summaryItem(cls, text) {
-      var item = summary.appendChild(el("span", cls || ""));
-      item.appendChild(el("i"));
-      item.appendChild(document.createTextNode(text));
-    }
-    summaryItem("", liveCount + " live");
-    if (warnCount) { summaryItem("warn", warnCount + " attention"); }
-    if (downCount) { summaryItem("down", downCount + " down"); }
-    if (unmeasuredCount) { summaryItem("idle", unmeasuredCount + " unmeasured"); }
-    summaryItem("idle", "owner paths on demand");
 
     var clientWidth = Math.max(netMap.clientWidth, 320);
     var W = Math.max(clientWidth, 2192);
@@ -1595,48 +1600,23 @@
       + "EC2 origin: " + originState + ". Latest Spot probe: " + shown(spot, "ms")
       + "; Futures probe: " + shown(futures, "ms") + ". News polling: " + newsState + "; "
       + amount(newsLive, "live news group", "live news groups") + ". Mac, Systems Manager, Secrets Manager and signed "
-      + "order paths are on demand. External moving light scales from a measured RTT or cadence; internal light shows direction. "
-      + "Neither is packet capture.";
+      + "order paths are on demand.";
     stage.textContent = "";
     stage.appendChild(chart);
     stage.scrollLeft = Math.min(netMapScroll, Math.max(0, stage.scrollWidth - stage.clientWidth));
-
-    var defs = chart.appendChild(svg("defs", {}));
-    var smallGrid = defs.appendChild(svg("pattern", {
-      id: "net-circuit-grid-small", width: 10, height: 10, patternUnits: "userSpaceOnUse"
-    }));
-    smallGrid.appendChild(svg("path", { d: "M10 0H0V10", "class": "net-circuit-grid-small" }));
-    var largeGrid = defs.appendChild(svg("pattern", {
-      id: "net-circuit-grid-large", width: 50, height: 50, patternUnits: "userSpaceOnUse"
-    }));
-    largeGrid.appendChild(svg("rect", { width: 50, height: 50, fill: "url(#net-circuit-grid-small)" }));
-    largeGrid.appendChild(svg("path", { d: "M50 0H0V50", "class": "net-circuit-grid-large" }));
-    chart.appendChild(svg("rect", { width: W, height: H, fill: "url(#net-circuit-grid-large)",
-      "class": "net-circuit-bg" }));
 
     var cloudX = Math.max(285, W * 0.17);
     var coreX = Math.max(cloudX + 315, W * 0.39);
     var rightX = W - 260;
     var browserBox = { x: 40, y: 116, w: 200, h: 124 };
     var cloudBox = { x: cloudX, y: 103, w: 220, h: 150 };
-    var coreBox = { x: coreX, y: 52, w: 460, h: 570 };
-    var spotBox = { x: rightX, y: 72, w: 220, h: 126 };
-    var futuresBox = { x: rightX, y: 230, w: 220, h: 126 };
-    var newsBox = { x: rightX, y: 388, w: 220, h: 138 };
-    var secretsBox = { x: rightX, y: 558, w: 220, h: 100 };
-    var macBox = { x: 40, y: 532, w: 200, h: 106 };
-    var ssmBox = { x: cloudX, y: 532, w: 220, h: 106 };
-
-    function zone(text, x, y, width) {
-      chart.appendChild(svg("text", { x: x, y: y, "class": "net-circuit-zone" })).textContent = text;
-      chart.appendChild(svg("line", {
-        x1: x, y1: y + 9, x2: x + width, y2: y + 9, "class": "net-circuit-zone-rule"
-      }));
-    }
-    zone("VIEWER / EDGE", 38, 28, Math.max(470, coreX - 82));
-    zone("YOUR AWS EC2 · AP-SOUTH-1", coreX, 28, 460);
-    zone("PUBLIC SERVICES", rightX, 28, 220);
-    zone("OWNER CONTROL · ON DEMAND", 38, 510, Math.max(470, coreX - 82));
+    var coreBox = { x: coreX, y: 52, w: 500, h: 570 };
+    var spotBox = { x: rightX, y: 121, w: 220, h: 120 };
+    var futuresBox = { x: rightX, y: 273, w: 220, h: 120 };
+    var newsBox = { x: rightX, y: 416, w: 220, h: 130 };
+    var secretsBox = { x: rightX, y: 572, w: 220, h: 100 };
+    var macBox = { x: 40, y: 525, w: 200, h: 106 };
+    var ssmBox = { x: cloudX, y: 525, w: 220, h: 106 };
 
     function speed(item, base) {
       var value = typeof item.value === "number" ? item.value : base;
@@ -1676,27 +1656,6 @@
       return group;
     }
 
-    function wireLabel(x, y, title, sub, width) {
-      width = width || Math.max(116, title.length * 6.4 + 20);
-      var height = sub ? 35 : 23;
-      var group = chart.appendChild(svg("g", {}));
-      group.appendChild(svg("rect", {
-        x: x - width / 2, y: y - 14, width: width, height: height, rx: 5,
-        "class": "net-circuit-label-bg"
-      }));
-      group.appendChild(svg("text", { x: x, y: y, "class": "net-circuit-label" })).textContent = title;
-      if (sub) {
-        group.appendChild(svg("text", { x: x, y: y + 14, "class": "net-circuit-label-sub" })).textContent = sub;
-      }
-    }
-
-    function openSwitch(x, y) {
-      var group = chart.appendChild(svg("g", { transform: "translate(" + x + " " + y + ")" }));
-      group.appendChild(svg("circle", { cx: -8, cy: 0, r: 2.2, "class": "net-circuit-junction idle" }));
-      group.appendChild(svg("circle", { cx: 8, cy: 0, r: 2.2, "class": "net-circuit-junction idle" }));
-      group.appendChild(svg("path", { d: "M-6 -1L5 -8", "class": "net-circuit-switch" }));
-    }
-
     var browserEdge = worst(browserState, tunnelState);
     var cloudCore = worst(tunnelState, originState);
     var browserY = browserBox.y + browserBox.h / 2;
@@ -1713,118 +1672,82 @@
       start: [browserBox.x + browserBox.w, browserY + 8], end: [cloudBox.x, browserY + 8],
       tip: "Page and live JSON response"
     });
-    wireLabel((browserBox.x + browserBox.w + cloudBox.x) / 2, 77,
-      "HTTPS · PAGE + LIVE JSON", "net.json fetch " + shown(browser, "ms"), 184);
 
     var knownLaneCount = typeof connections.value === "number";
     var laneCount = knownLaneCount ? Math.max(0, Math.min(4, Math.round(connections.value))) : 0;
     var renderedLanes = Math.max(1, laneCount);
     var tunnelCloudPins = [];
     var tunnelCorePins = [];
-    var tunnelMiddle = (cloudBox.x + cloudBox.w + coreBox.x) / 2;
     for (var lane = 0; lane < renderedLanes; lane++) {
-      var fromY = cloudBox.y + 60 + lane * 19;
-      var toY = coreBox.y + 94 + lane * 16;
-      tunnelCloudPins.push(fromY - cloudBox.y);
-      tunnelCorePins.push(toY - coreBox.y);
-      var bend = tunnelMiddle + (lane - (renderedLanes - 1) / 2) * 8;
+      var laneY = cloudBox.y + 60 + lane * 19;
+      tunnelCloudPins.push(laneY - cloudBox.y);
+      tunnelCorePins.push(laneY - coreBox.y);
       addWire({
-        d: "M" + (cloudBox.x + cloudBox.w) + " " + fromY + "H" + bend + "V" + toY + "H" + coreBox.x,
+        d: "M" + (cloudBox.x + cloudBox.w) + " " + laneY + "H" + coreBox.x,
         state: cloudCore, speed: speed(tunnelRtt, 2) + lane * 0.12, offset: 4 + lane,
         reverse: lane % 2 === 1, both: true,
-        start: [cloudBox.x + cloudBox.w, fromY], end: [coreBox.x, toY],
+        start: [cloudBox.x + cloudBox.w, laneY], end: [coreBox.x, laneY],
         tip: knownLaneCount && laneCount === 0
           ? "Expected Cloudflare tunnel path; currently no live connections"
           : knownLaneCount ? "Encrypted Cloudflare connection " + (lane + 1) + " of " + laneCount
             : "Expected encrypted Cloudflare path; live count unavailable"
       });
     }
-    wireLabel(tunnelMiddle, 278, "ENCRYPTED CLOUDFLARE TUNNEL",
-      amount(connections, "live connection", "live connections") + " · edge " + shown(tunnelRtt, "ms"), 252);
 
-    var branchX = coreBox.x + coreBox.w + Math.max(92, (rightX - coreBox.x - coreBox.w) * 0.46);
-    var tradeStart = [coreBox.x + coreBox.w, coreBox.y + 129];
-    var spotEnd = [spotBox.x, spotBox.y + spotBox.h / 2];
-    var futuresEnd = [futuresBox.x, futuresBox.y + futuresBox.h / 2];
-    addWire({ d: "M" + tradeStart[0] + " " + tradeStart[1] + "H" + branchX,
-      state: tradeTrunkState, speed: Math.max(speed(spot, 150), speed(futures, 150)), offset: 9, both: true, noEnds: true,
-      start: tradeStart, end: [branchX, tradeStart[1]], tip: "Shared EC2 public HTTPS trunk" });
-    addWire({ d: "M" + branchX + " " + tradeStart[1] + "V" + spotEnd[1] + "H" + spotEnd[0],
-      state: spotPathState, speed: speed(spot, 150), offset: 10, both: true, noEnds: true,
-      start: [branchX, tradeStart[1]], end: spotEnd, tip: "EC2 to Binance Spot over public HTTPS" });
-    addWire({ d: "M" + branchX + " " + tradeStart[1] + "V" + futuresEnd[1] + "H" + futuresEnd[0],
-      state: futuresState, speed: speed(futures, 150), offset: 11, both: true, noEnds: true,
-      start: [branchX, tradeStart[1]], end: futuresEnd, tip: "EC2 to Binance Futures over public HTTPS" });
-    chart.appendChild(svg("circle", {
-      cx: branchX, cy: tradeStart[1], r: 4, "class": "net-circuit-junction " + tradeTrunkState
-    }));
-    wireLabel((branchX + rightX) / 2, 212, "PUBLIC HTTPS · REST",
-      "probes · signed orders on command", 280);
-
-    var newsStart = [coreBox.x + coreBox.w, coreBox.y + 274];
-    var newsEnd = [newsBox.x, newsBox.y + newsBox.h / 2];
-    var newsBend = coreBox.x + coreBox.w + Math.max(100, (rightX - coreBox.x - coreBox.w) * 0.56);
-    addWire({
-      d: "M" + newsStart[0] + " " + newsStart[1] + "H" + newsBend + "V" + newsEnd[1] + "H" + newsEnd[0],
+    var edgeX = coreBox.x + coreBox.w;
+    var spotY = spotBox.y + spotBox.h / 2;
+    var futuresY = futuresBox.y + futuresBox.h / 2;
+    var newsY = newsBox.y + newsBox.h / 2;
+    var secretY = secretsBox.y + secretsBox.h / 2;
+    addWire({ d: "M" + edgeX + " " + spotY + "H" + spotBox.x,
+      state: spotPathState, speed: speed(spot, 150), offset: 10, both: true,
+      start: [edgeX, spotY], end: [spotBox.x, spotY], tip: "EC2 to Binance Spot over public HTTPS" });
+    addWire({ d: "M" + edgeX + " " + futuresY + "H" + futuresBox.x,
+      state: futuresState, speed: speed(futures, 150), offset: 11, both: true,
+      start: [edgeX, futuresY], end: [futuresBox.x, futuresY], tip: "EC2 to Binance Futures over public HTTPS" });
+    addWire({ d: "M" + edgeX + " " + newsY + "H" + newsBox.x,
       state: newsState,
       speed: Math.max(4.5, Math.min(12, (typeof newsInterval.value === "number" ? newsInterval.value : 120) / 10)),
-      offset: 14, both: true, start: newsStart, end: newsEnd,
+      offset: 14, both: true, start: [edgeX, newsY], end: [newsBox.x, newsY],
       tip: "News runner downloads RSS and JSON sources"
     });
-    wireLabel((newsBend + rightX) / 2, 432, "RSS + JSON POLLING",
-      "poll " + shown(newsInterval, "s") + " · run " + shown(newsDuration, "s"), 232);
 
     var macY = macBox.y + macBox.h / 2;
     var ssmY = ssmBox.y + ssmBox.h / 2;
-    var controlEnd = [coreBox.x, coreBox.y + 526];
-    var macSwitchX = (macBox.x + macBox.w + ssmBox.x) / 2;
-    var ssmSwitchX = (ssmBox.x + ssmBox.w + coreBox.x) / 2;
-    addWire({
-      d: "M" + (macBox.x + macBox.w) + " " + macY + "H" + (macSwitchX - 8)
-        + "M" + (macSwitchX + 8) + " " + macY + "H" + ssmBox.x,
+    addWire({ d: "M" + (macBox.x + macBox.w) + " " + macY + "H" + ssmBox.x,
       state: "idle", start: [macBox.x + macBox.w, macY], end: [ssmBox.x, macY],
-      tip: "Commands and output exist only while the owner connects"
-    });
-    addWire({
-      d: "M" + (ssmBox.x + ssmBox.w) + " " + ssmY + "H" + (ssmSwitchX - 8)
-        + "M" + (ssmSwitchX + 8) + " " + ssmY + "H" + (coreBox.x - 34)
-        + "V" + controlEnd[1] + "H" + controlEnd[0],
-      state: "idle", start: [ssmBox.x + ssmBox.w, ssmY], end: controlEnd,
-      tip: "AWS Systems Manager control channel, on demand"
-    });
-    openSwitch(macSwitchX, macY);
-    openSwitch(ssmSwitchX, ssmY);
-    wireLabel((macBox.x + macBox.w + ssmBox.x) / 2, 650, "COMMANDS + OUTPUT", "on demand", 170);
-    wireLabel((ssmBox.x + ssmBox.w + coreBox.x) / 2, 650, "AWS CONTROL CHANNEL", "on demand", 180);
-
-    var secretStart = [coreBox.x + coreBox.w, coreBox.y + 510];
-    var secretEnd = [secretsBox.x, secretsBox.y + secretsBox.h / 2];
-    var secretBend = branchX + 18;
-    var secretSwitchX = (secretBend + secretEnd[0]) / 2;
-    addWire({
-      d: "M" + secretStart[0] + " " + secretStart[1] + "H" + secretBend
-        + "V" + secretEnd[1] + "H" + (secretSwitchX - 8)
-        + "M" + (secretSwitchX + 8) + " " + secretEnd[1] + "H" + secretEnd[0],
-      state: "idle", start: secretStart, end: secretEnd,
-      tip: "Trader retrieves credentials from Secrets Manager only when a command starts"
-    });
-    openSwitch(secretSwitchX, secretEnd[1]);
-    wireLabel((branchX + 18 + rightX) / 2, 535, "CREDENTIALS AT START", "on demand · never exposed to the UI", 242);
+      tip: "Commands and output exist only while the owner connects" });
+    addWire({ d: "M" + (ssmBox.x + ssmBox.w) + " " + ssmY + "H" + coreBox.x,
+      state: "idle", start: [ssmBox.x + ssmBox.w, ssmY], end: [coreBox.x, ssmY],
+      tip: "AWS Systems Manager control channel, on demand" });
+    addWire({ d: "M" + edgeX + " " + secretY + "H" + secretsBox.x,
+      state: "idle", start: [edgeX, secretY], end: [secretsBox.x, secretY],
+      tip: "Trader retrieves credentials from Secrets Manager only when a command starts" });
 
     function addLogo(parent, kind, x, y) {
       var logo = parent.appendChild(svg("g", {
         "class": "net-circuit-logo " + kind, transform: "translate(" + x + " " + y + ")"
       }));
-      function serviceIcon(color, path) {
-        logo.appendChild(svg("rect", { width: 24, height: 24, fill: color }));
-        logo.appendChild(svg("path", { d: path, fill: "#fff" }));
+      function serviceIcon(id, stopA, stopB, glyph) {
+        var grad = logo.appendChild(svg("linearGradient", { id: id, x1: "0%", y1: "100%", x2: "100%", y2: "0%" }));
+        grad.appendChild(svg("stop", { "stop-color": stopA, offset: "0" }));
+        grad.appendChild(svg("stop", { "stop-color": stopB, offset: "1" }));
+        logo.appendChild(svg("rect", { width: 28, height: 28, rx: 6, fill: "url(#" + id + ")" }));
+        logo.appendChild(svg("g", { transform: "scale(0.109375)" }))
+          .appendChild(svg("path", { d: glyph, fill: "#fff" }));
       }
       if (kind === "browser") {
-        logo.appendChild(svg("circle", { cx: 13, cy: 13, r: 10, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }));
-        logo.appendChild(svg("path", { d: "M3 13h20M13 3c4 4.7 4 15.3 0 20M13 3c-4 4.7-4 15.3 0 20", fill: "none",
-          stroke: "currentColor", "stroke-width": 1.2 }));
+        var chrome = logo.appendChild(svg("g", { transform: "translate(1 1) scale(1.08)" }));
+        chrome.appendChild(svg("path", { fill: "#ea4335",
+          d: "M12 0C8.21 0 4.831 1.757 2.632 4.501l3.953 6.848A5.454 5.454 0 0 1 12 6.545h10.691A12 12 0 0 0 12 0z" }));
+        chrome.appendChild(svg("path", { fill: "#34a853",
+          d: "M1.931 5.47A11.943 11.943 0 0 0 0 12c0 6.012 4.42 10.991 10.189 11.864l3.953-6.847a5.45 5.45 0 0 1-6.865-2.29z" }));
+        chrome.appendChild(svg("path", { fill: "#fbbc05",
+          d: "M15.273 7.636a5.446 5.446 0 0 1 1.45 7.09l.002.001h-.002l-5.344 9.257c.206.01.413.016.621.016 6.627 0 12-5.373 12-12 0-1.54-.29-3.011-.818-4.364z" }));
+        chrome.appendChild(svg("circle", { cx: 12, cy: 12, r: 5.45, fill: "#fff" }));
+        chrome.appendChild(svg("circle", { cx: 12, cy: 12, r: 4.36, fill: "#4285f4" }));
       } else if (kind === "cloudflare") {
-        var cloudflare = logo.appendChild(svg("g", { transform: "translate(-28 5) scale(.52)" }));
+        var cloudflare = logo.appendChild(svg("g", { transform: "translate(-31 3.8) scale(.55)" }));
         cloudflare.appendChild(svg("path", {
           d: "M88.1 24c.3-1 .2-2-.3-2.6-.5-.6-1.2-1-2.1-1.1l-17.4-.2c-.1 0-.2-.1-.3-.1-.1-.1-.1-.2 0-.3.1-.2.2-.3.4-.3l17.5-.2c2.1-.1 4.3-1.8 5.1-3.8l1-2.6c0-.1.1-.2 0-.3-1.1-5.1-5.7-8.9-11.1-8.9-5 0-9.3 3.2-10.8 7.7-1-.7-2.2-1.1-3.6-1-2.4.2-4.3 2.2-4.6 4.6-.1.6 0 1.2.1 1.8-3.9.1-7.1 3.3-7.1 7.3 0 .4 0 .7.1 1.1 0 .2.2.3.3.3h32.1c.2 0 .4-.1.4-.3l.3-1.1z",
           fill: "#f48120"
@@ -1834,35 +1757,37 @@
           fill: "#faad3f"
         }));
       } else if (kind === "ec2") {
-        serviceIcon("#ed7100", "M15 9H10v5h5V9Zm1 0h1v1h-1v1h1v1h-1v1h1v1h-1v.308c0 .381-.311.692-.692.692H15v1h-1v-1h-1v1h-1v-1h-1v1h-1v-1h-.308A.693.693 0 0 1 9 14.308V14H8v-1h1v-1H8v-1h1v-1H8V9h1v-.308C9 8.311 9.311 8 9.692 8H10V7h1v1h1V7h1v1h1V7h1v1h.308c.381 0 .692.311.692.692V9Zm-4 10H5v-6h2v-1H4.8c-.442 0-.8.342-.8.762v6.457c0 .431.351.781.781.781H12.2c.442 0 .8-.342.8-.762V17h-1v2Zm8-14.219v7.438c0 .431-.351.781-.781.781H18v-1h1V5h-7v1h-1V4.781c0-.431.351-.781.781-.781h7.438c.43 0 .781.35.781.781Z");
+        var cube = logo.appendChild(svg("g", { transform: "translate(2.4 0.5) scale(.0873)" }));
+        [["M42.754,244.495 L12.836,251.321 L12.836,57.565 L42.754,64.404 L42.754,244.495", "#F68536"],
+          ["M80.082,255.931 L42.754,266.539 L42.754,42.612 L80.082,53.207 L80.082,255.931", "#F68536"],
+          ["M127.966,267.681 L80.082,285.205 L80.082,23.946 L127.966,41.462 L127.966,267.681", "#F68536"],
+          ["M256,245.079 L127.966,309.096 L127.966,0 L256,64.017 L256,245.079", "#F68536"],
+          ["M102.444,12.763 L127.966,0 L127.966,309.096 L102.444,296.337 L102.444,12.763", "#9D5025"],
+          ["M60.325,33.82 L80.082,23.942 L80.082,285.154 L60.325,275.276 L60.325,33.82", "#9D5025"],
+          ["M27.016,50.477 L42.754,42.608 L42.754,266.488 L27.016,258.614 L27.016,50.477", "#9D5025"],
+          ["M12.836,57.565 L0,63.983 L0,245.117 L12.836,251.531 L12.836,57.565", "#9D5025"]
+        ].forEach(function (piece) { cube.appendChild(svg("path", { d: piece[0], fill: piece[1] })); });
       } else if (kind === "ssm") {
-        serviceIcon("#e7157b", "M7.031 9.268c0 .137.009.274.024.406a.5.5 0 0 1-.122.392.503.503 0 0 1-.276.159C6.028 10.389 5 10.882 5 12.35c0 1.132.811 1.921 1.54 1.921h3.497v1H6.54c-1.227 0-2.54-1.174-2.54-2.921 0-1.415.751-2.5 2.032-2.976a8.21 8.21 0 0 1-.001-.106c0-1.62 1.1-3.299 2.559-3.907 1.7-.712 3.501-.359 4.817.943.348.345.643.752.881 1.214a2.03 2.03 0 0 1 1.077-.311c.903 0 1.915.651 2.147 2.071 1.256.334 2.47 1.288 2.47 3.093h-1c0-1.67-1.411-2.087-2.017-2.189a.5.5 0 0 1-.328-.208.505.505 0 0 1-.081-.379c-.077-.999-.689-1.388-1.191-1.388-.332 0-.645.164-.857.449a.5.5 0 0 1-.474.195.5.5 0 0 1-.397-.325 4.256 4.256 0 0 0-.934-1.511c-.489-.485-1.835-1.525-3.728-.731-1.09.454-1.944 1.765-1.944 2.984Zm8.674 6.836a.677.677 0 0 1-.473.207.68.68 0 0 1-.481-.188.677.677 0 0 1-.019-.955.677.677 0 0 1 .954-.018.677.677 0 0 1 .019.954Zm-.52-2.142a1.675 1.675 0 0 0-1.174.514 1.675 1.675 0 0 0 .046 2.368 1.675 1.675 0 0 0 2.369-.047 1.675 1.675 0 0 0-.046-2.368c-.323-.31-.722-.465-1.195-.467Zm2.942 3.389-.985-.198a.5.5 0 0 0-.393.087l-.504.369a.5.5 0 0 0-.202.345l-.116.992-1.459-.001-.115-.985a.5.5 0 0 0-.2-.344l-.51-.377a.5.5 0 0 0-.394-.088l-.978.195-.449-1.388.915-.42a.5.5 0 0 0 .268-.299l.191-.587a.5.5 0 0 0-.04-.4l-.492-.877 1.18-.857.676.734a.5.5 0 0 0 .371.162l.634-.004a.5.5 0 0 0 .364-.162l.672-.728 1.18.859-.49.873a.5.5 0 0 0-.041.397l.189.593a.5.5 0 0 0 .268.302l.912.419-.452 1.388Zm1.274-2.11-1.116-.514-.056-.175.602-1.07a.5.5 0 0 0-.142-.65l-1.899-1.382a.5.5 0 0 0-.661.066l-.827.895-.196.001-.827-.898a.5.5 0 0 0-.662-.066l-1.901 1.379a.5.5 0 0 0-.142.65l.603 1.074-.055.169-1.121.514a.5.5 0 0 0-.268.609l.725 2.235a.5.5 0 0 0 .573.336l1.196-.239.158.116.14 1.211a.5.5 0 0 0 .497.443l2.35.002a.5.5 0 0 0 .497-.442l.142-1.218.15-.11 1.205.242a.5.5 0 0 0 .574-.336l.728-2.233a.5.5 0 0 0-.267-.609Z");
+        serviceIcon("awsssmg", "#B0084D", "#FF4F8B", "M150.4,175.993789 L192,175.993789 L192,182.394744 L150.4,182.394744 L150.4,188.7957 L144,188.7957 L144,182.394744 L131.2,182.394744 L131.2,175.993789 L144,175.993789 L144,172.793311 L150.4,172.793311 L150.4,175.993789 Z M163.2,156.790922 L192,156.790922 L192,163.191878 L163.2,163.191878 L163.2,169.592833 L156.8,169.592833 L156.8,163.191878 L131.2,163.191878 L131.2,156.790922 L156.8,156.790922 L156.8,153.590444 L163.2,153.590444 L163.2,156.790922 Z M179.2,137.588056 L192,137.588056 L192,143.989011 L179.2,143.989011 L179.2,150.389967 L172.8,150.389967 L172.8,143.989011 L131.2,143.989011 L131.2,137.588056 L172.8,137.588056 L172.8,134.387578 L179.2,134.387578 L179.2,137.588056 Z M67.2,150.389967 L96,150.389967 L96,156.790922 L67.2,156.790922 C63.184,156.790922 58.8928,155.584342 55.7216,153.564841 C49.2576,149.471429 38.4,139.889199 38.4,121.732889 C38.4,99.7136016 53.328,91.6323952 62.016,88.7999722 L61.8432,85.8683347 C61.8368,67.7312272 73.8368,49.1332509 89.7472,42.421849 C108.3808,34.5006662 128.1152,38.4244522 142.544,52.919416 C147.0208,57.4032854 150.7072,62.8729018 153.5296,69.2194493 C159.1968,64.4987446 166.912,62.8825034 174.08,65.2348544 C183.1904,68.2241008 188.8608,76.6445578 189.5264,87.9806499 C198.608,90.1537744 217.6,97.6268899 217.6,122.020932 C217.6,122.933068 217.5648,123.813199 217.5296,124.654925 L211.1328,124.4853 C211.1648,123.630772 211.2,122.843454 211.2,122.020932 C211.2,100.472115 193.4176,95.0601069 185.7728,93.7351091 C184.9088,93.5846867 184.1472,93.0918131 183.6608,92.3653046 C183.1776,91.6451971 183.008,90.7618653 183.1872,89.9137386 C183.0944,80.3731142 179.0592,73.6041037 172.0832,71.3157622 C165.8336,69.257855 158.9664,71.5269936 154.9888,76.9422022 C154.2848,77.892744 153.1296,78.3888182 151.9424,78.2095914 C150.7712,78.0399661 149.792,77.2334458 149.3952,76.1164787 C146.7296,68.6177594 142.8992,62.3352214 138.0128,57.4416909 C125.4912,44.8606128 108.3744,41.4553046 92.2432,48.317129 C78.7776,53.9947763 68.2368,70.4068266 68.2368,85.6795066 L68.5536,90.9730966 C68.6432,92.5029251 67.6352,93.8823309 66.1472,94.2599875 C58.176,96.2890902 44.8,102.555626 44.8,121.732889 C44.8,136.067828 52.6016,144.014615 59.152,148.159234 C61.312,149.53864 64.3936,150.389967 67.2,150.389967 L67.2,150.389967 Z M211.2,167.416508 L205.5552,167.09326 C204.0416,167.013248 202.5984,168.056604 202.2528,169.586432 C201.1712,174.380748 199.2896,178.925427 196.6592,183.092449 C195.824,184.417446 196.0672,186.148905 197.2384,187.19226 L201.4528,190.949621 L190.9536,201.45359 L187.2064,197.251362 C186.1632,196.076787 184.4256,195.839952 183.1104,196.675276 C178.944,199.306069 174.3968,201.19115 169.5904,202.276112 C168.0672,202.621764 167.0112,204.020373 167.104,205.582206 L167.424,211.199044 L152.576,211.199044 L152.896,205.575805 C152.9888,204.013972 151.9328,202.615363 150.4096,202.269711 C145.616,201.18795 141.0688,199.299668 136.896,196.665675 C135.5744,195.82715 133.84,196.067186 132.8,197.241761 L129.0432,201.450389 L118.5472,190.949621 L122.7552,187.198661 C123.9232,186.155306 124.1664,184.423847 123.3312,183.10205 C120.704,178.935028 118.8224,174.390349 117.7408,169.586432 C117.3984,168.056604 115.8688,167.013248 114.4384,167.09326 L108.8,167.416508 L108.8,152.566292 L114.4576,152.88954 C115.9456,152.972752 117.4112,151.926196 117.76,150.399568 C118.8448,145.614854 120.7296,141.076576 123.36,136.912755 C124.1952,135.587757 123.9488,133.853098 122.784,132.812943 L118.5472,129.033179 L129.0464,118.532411 L132.8256,122.766643 C133.8688,123.931617 135.6032,124.171653 136.9184,123.339529 C141.0784,120.718337 145.616,118.839657 150.4096,117.757895 C151.9328,117.412244 152.9888,116.013635 152.896,114.451802 L152.576,108.783756 L167.424,108.783756 L167.104,114.458203 C167.0112,116.020036 168.0672,117.415444 169.5904,117.761096 C174.3744,118.846058 178.9088,120.724738 183.0752,123.34913 C184.3904,124.184455 186.128,123.941218 187.168,122.776244 L190.9536,118.532411 L201.4528,129.033179 L197.2256,132.803341 C196.0608,133.846697 195.8144,135.578156 196.6496,136.903153 C199.28,141.066975 201.1648,145.608453 202.2464,150.399568 C202.592,151.922996 204.0416,152.972752 205.5488,152.88954 L211.2,152.566292 L211.2,167.416508 Z M214.2176,145.982909 L207.8144,146.347763 C206.7744,142.683216 205.312,139.15949 203.4528,135.824592 L208.2432,131.551955 C208.8992,130.966267 209.2864,130.137343 209.312,129.254012 C209.3376,128.377081 208.9984,127.522553 208.3744,126.90166 L193.0848,111.609777 C192.464,110.985684 191.5776,110.627231 190.7328,110.675238 C189.8496,110.700842 189.0208,111.084899 188.4352,111.740997 L184.1472,116.548115 C180.816,114.691837 177.2992,113.23562 173.6416,112.192264 L174.0064,105.765705 C174.0576,104.885574 173.744,104.024645 173.136,103.384549 C172.5344,102.744454 171.6928,102.3828 170.8128,102.3828 L149.1872,102.3828 C148.3072,102.3828 147.4656,102.744454 146.864,103.384549 C146.256,104.024645 145.9424,104.885574 145.9936,105.765705 L146.3584,112.185863 C142.6944,113.226019 139.1744,114.685436 135.8464,116.538513 L131.5648,111.740997 C130.9792,111.084899 130.1504,110.700842 129.2672,110.675238 C128.3616,110.633632 127.536,110.985684 126.9152,111.609777 L111.6256,126.90166 C111.0016,127.522553 110.6624,128.377081 110.688,129.254012 C110.7136,130.134143 111.1008,130.966267 111.7568,131.551955 L116.5568,135.834194 C114.6976,139.169092 113.2352,142.686417 112.192,146.347763 L105.7824,145.9253 C104.9248,145.9253 104.0416,146.248548 103.4016,146.850238 C102.7616,147.455129 102.4,148.296854 102.4,149.176986 L102.4,170.805814 C102.4,171.685946 102.7616,172.527671 103.4016,173.132562 C104.0416,173.734252 104.928,174.047898 105.7824,173.999891 L112.1696,173.635037 C113.2096,177.309185 114.6688,180.836112 116.528,184.17421 L111.7568,188.427645 C111.1008,189.013332 110.7136,189.845457 110.688,190.725588 C110.6624,191.605719 111.0016,192.460247 111.6256,193.08114 L126.9152,208.373023 C127.536,208.997116 128.4416,209.339567 129.2672,209.310763 C130.1504,209.285159 130.9824,208.897901 131.5648,208.241803 L135.8208,203.46669 C139.1584,205.332569 142.688,206.798388 146.3552,207.841743 L145.9936,214.217095 C145.9424,215.094026 146.256,215.954955 146.864,216.598251 C147.4656,217.238346 148.3072,217.6 149.1872,217.6 L170.8128,217.6 C171.6928,217.6 172.5344,217.238346 173.1392,216.598251 C173.744,215.954955 174.0576,215.094026 174.0064,214.217095 L173.6448,207.848144 C177.3184,206.801588 180.848,205.33897 184.1856,203.476292 L188.4352,208.241803 C189.0176,208.897901 189.8496,209.285159 190.7328,209.310763 C191.5872,209.349168 192.464,208.997116 193.0848,208.373023 L208.3744,193.08114 C208.9984,192.460247 209.3376,191.605719 209.312,190.725588 C209.2864,189.845457 208.8992,189.013332 208.24,188.427645 L203.4624,184.167809 C205.3216,180.829711 206.7808,177.302784 207.824,173.635037 L214.2176,173.999891 C215.0816,174.047898 215.9584,173.734252 216.5984,173.132562 C217.2384,172.527671 217.6,171.685946 217.6,170.805814 L217.6,149.176986 C217.6,148.296854 217.2384,147.455129 216.5984,146.850238 C215.9584,146.248548 215.0848,145.9285 214.2176,145.982909 L214.2176,145.982909 Z");
       } else if (kind === "binance") {
-        ["M13 2l4 4-4 4-4-4Z", "M6 9l4 4-4 4-4-4Z", "M20 9l4 4-4 4-4-4Z",
-          "M13 16l4 4-4 4-4-4Z", "M13 9l4 4-4 4-4-4Z"].forEach(function (d) {
-          logo.appendChild(svg("path", { d: d, fill: "currentColor" }));
-        });
+        logo.appendChild(svg("g", { transform: "translate(1 1) scale(1.08)" }))
+          .appendChild(svg("path", { fill: "#f0b90b",
+            d: "M16.624 13.9202l2.7175 2.7154-7.353 7.353-7.353-7.352 2.7175-2.7164 4.6355 4.6595 4.6356-4.6595zm4.6366-4.6366L24 12l-2.7154 2.7164L18.5682 12l2.6924-2.7164zm-9.272.001l2.7163 2.6914-2.7164 2.7174v-.001L9.2721 12l2.7164-2.7154zm-9.2722-.001L5.4088 12l-2.6914 2.6924L0 12l2.7164-2.7164zM11.9885.0115l7.353 7.329-2.7174 2.7154-4.6356-4.6356-4.6355 4.6595-2.7174-2.7154 7.353-7.353z" }));
       } else if (kind === "news") {
-        logo.appendChild(svg("circle", { cx: 6, cy: 20, r: 2.2, fill: "currentColor" }));
-        logo.appendChild(svg("path", { d: "M5 12a9 9 0 0 1 9 9M5 5a16 16 0 0 1 16 16", fill: "none",
-          stroke: "currentColor", "stroke-width": 3, "stroke-linecap": "round" }));
+        logo.appendChild(svg("circle", { cx: 14, cy: 14, r: 14, fill: "#16181d" }));
+        logo.appendChild(svg("g", { transform: "translate(5.2 5.2) scale(.0344)" }))
+          .appendChild(svg("path", { fill: "#fff",
+            d: "M168 80c-13.3 0-24 10.7-24 24l0 304c0 8.4-1.4 16.5-4.1 24L440 432c13.3 0 24-10.7 24-24l0-304c0-13.3-10.7-24-24-24L168 80zM72 480c-39.8 0-72-32.2-72-72L0 112C0 98.7 10.7 88 24 88s24 10.7 24 24l0 296c0 13.3 10.7 24 24 24s24-10.7 24-24l0-304c0-39.8 32.2-72 72-72l272 0c39.8 0 72 32.2 72 72l0 304c0 39.8-32.2 72-72 72L72 480zM176 136c0-13.3 10.7-24 24-24l96 0c13.3 0 24 10.7 24 24l0 80c0 13.3-10.7 24-24 24l-96 0c-13.3 0-24-10.7-24-24l0-80zm200-24l32 0c13.3 0 24 10.7 24 24s-10.7 24-24 24l-32 0c-13.3 0-24-10.7-24-24s10.7-24 24-24zm0 80l32 0c13.3 0 24 10.7 24 24s-10.7 24-24 24l-32 0c-13.3 0-24-10.7-24-24s10.7-24 24-24zM200 272l208 0c13.3 0 24 10.7 24 24s-10.7 24-24 24l-208 0c-13.3 0-24-10.7-24-24s10.7-24 24-24zm0 80l208 0c13.3 0 24 10.7 24 24s-10.7 24-24 24l-208 0c-13.3 0-24-10.7-24-24s10.7-24 24-24z" }));
       } else if (kind === "terminal") {
-        logo.appendChild(svg("rect", { x: 2, y: 3, width: 22, height: 19, rx: 3, fill: "none",
-          stroke: "currentColor", "stroke-width": 1.4 }));
-        logo.appendChild(svg("path", { d: "M6 9l4 4-4 4M13 17h6", fill: "none",
-          stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+        logo.appendChild(svg("g", { transform: "translate(1 1) scale(1.08)" }))
+          .appendChild(svg("path", { fill: "#1d1d1f",
+            d: "M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" }));
       } else if (kind === "secrets") {
-        serviceIcon("#dd344c", "M10.938 15.099h3.117v-2.132h-3.117v2.132Zm.576-3.132h1.972c-.06-1.059-.344-1.467-.972-1.467-.647 0-.937.408-1 1.467Zm3.041 0c.276 0 .5.223.5.5v3.132c0 .276-.224.5-.5.5h-4.118a.5.5 0 0 1-.5-.5v-3.132c0-.277.224-.5.5-.5h.077c.049-.944.332-2.467 2-2.467 1.645 0 1.924 1.523 1.972 2.467h.069ZM7.019 16.41l.81-.586a5.906 5.906 0 0 1-1.043-2.857H8v-1H6.787a5.893 5.893 0 0 1 1.042-2.839l-.81-.586a6.9 6.9 0 0 0-1.232 3.425H5v1h.786a6.906 6.906 0 0 0 1.233 3.443Zm8.795.704a5.91 5.91 0 0 1-2.847 1.024V17h-1v1.138a5.91 5.91 0 0 1-2.848-1.024l-.586.81a6.91 6.91 0 0 0 3.434 1.232V20h1v-.844a6.91 6.91 0 0 0 3.433-1.232l-.586-.81ZM9.119 7.838a5.91 5.91 0 0 1 2.848-1.023V8h1V6.815a5.91 5.91 0 0 1 2.847 1.024l.586-.811a6.9 6.9 0 0 0-3.433-1.209V5h-1v.819a6.9 6.9 0 0 0-3.434 1.21l.586.809Zm10.027 4.129a6.906 6.906 0 0 0-1.232-3.425l-.81.587a5.893 5.893 0 0 1 1.042 2.838H17v1h1.146a5.906 5.906 0 0 1-1.042 2.856l.81.587a6.906 6.906 0 0 0 1.232-3.443H20v-1h-.854Zm-2.369-3.094 1.979-1.979-.707-.707-1.979 1.979.707.707ZM8.155 16.08l-1.978 1.979.707.707 1.978-1.979-.707-.707Zm2.343-6.279L6.356 5.66l-.707.707 4.142 4.141.707-.707Zm5.726 5.716 3.38 3.38-.708.707-3.379-3.38.707-.707Z");
+        serviceIcon("awssecg", "#BD0816", "#FF5252", "M124.032,138.752 C124.032,140.9408 125.8144,142.72 128,142.72 C130.1888,142.72 131.968,140.9408 131.968,138.752 C131.968,136.5632 130.1888,134.784 128,134.784 C125.8144,134.784 124.032,136.5632 124.032,138.752 L124.032,138.752 Z M117.632,138.752 C117.632,133.0336 122.2816,128.384 128,128.384 C133.7184,128.384 138.368,133.0336 138.368,138.752 C138.368,143.3472 135.3472,147.2064 131.2,148.5632 L131.2,156.8 L124.8,156.8 L124.8,148.5632 C120.6528,147.2064 117.632,143.3472 117.632,138.752 L117.632,138.752 Z M156.8,121.6 L99.2,121.6 L99.2,163.2 L156.8,163.2 L156.8,153.6 L147.2,153.6 L147.2,147.2 L156.8,147.2 L156.8,137.6 L147.2,137.6 L147.2,131.2 L156.8,131.2 L156.8,121.6 Z M108.8,115.2 L147.1968,115.2 L147.200001,99.2 C147.2032,90.8288 138.0576,83.2064 128.0128,83.2 L128.0032,83.2 C123.1104,83.2 118.1696,85.0368 114.4416,88.24 C110.8576,91.3184 108.8,95.3152 108.8,99.2032 L108.8,115.2 Z M153.6,99.2032 L153.5968,115.2 L160,115.2 C161.7696,115.2 163.2,116.6336 163.2,118.4 L163.2,166.4 C163.2,168.1664 161.7696,169.6 160,169.6 L96,169.6 C94.2304,169.6 92.8,168.1664 92.8,166.4 L92.8,118.4 C92.8,116.6336 94.2304,115.2 96,115.2 L102.4,115.2 L102.4,99.2 C102.4032,93.4464 105.2704,87.6832 110.2688,83.3856 C115.1424,79.2 121.6032,76.8 128.0032,76.8 L128.0128,76.8 C141.648,76.8064 153.6032,87.2736 153.6,99.2032 L153.6,99.2032 Z M61.4624,176.1568 L66.6496,172.4064 C57.8976,160.3104 53.0592,146.1184 52.4672,131.2 L60.8,131.2 L60.8,124.8 L52.4768,124.8 C53.1136,109.9712 57.9456,95.8624 66.6496,83.8336 L61.4624,80.08 C51.9648,93.2096 46.7168,108.6144 46.0768,124.8 L38.4,124.8 L38.4,131.2 L46.0672,131.2 C46.6624,147.4752 51.9168,162.9632 61.4624,176.1568 L61.4624,176.1568 Z M172.2816,189.4656 C160.2208,198.1952 146.0736,203.0272 131.2,203.6448 L131.2,195.2 L124.8,195.2 L124.8,203.6448 C109.9264,203.0304 95.776,198.1984 83.7088,189.4656 L79.9616,194.6496 C93.12,204.176 108.5696,209.424 124.8,210.0448 L124.8,217.6 L131.2,217.6 L131.2,210.0448 C147.4304,209.424 162.8736,204.176 176.032,194.6496 L172.2816,189.4656 Z M83.7088,66.7712 C95.776,58.0416 109.9264,53.2096 124.8,52.5952 L124.8,60.8 L131.2,60.8 L131.2,52.5952 C146.0736,53.2096 160.2208,58.0416 172.2816,66.7712 L176.032,61.5872 C162.8736,52.064 147.4304,46.816 131.2,46.1952 L131.2,38.4 L124.8,38.4 L124.8,46.1952 C108.5696,46.8128 93.12,52.0608 79.9616,61.5872 L83.7088,66.7712 Z M209.9168,124.8 C209.2768,108.6144 204.0288,93.2096 194.528,80.08 L189.3408,83.8336 C198.048,95.8624 202.88,109.9712 203.5168,124.8 L195.2,124.8 L195.2,131.2 L203.5264,131.2 C202.9312,146.1184 198.096,160.3104 189.3408,172.4064 L194.528,176.1568 C204.0768,162.9632 209.328,147.4752 209.9264,131.2 L217.6,131.2 L217.6,124.8 L209.9168,124.8 Z M180.4352,80.2048 L205.5232,55.1168 L200.9984,50.592 L175.9104,75.68 L180.4352,80.2048 Z M75.5584,176.032 L50.4704,201.12 L54.9952,205.6448 L80.0832,180.5568 L75.5584,176.032 Z M91.7312,87.2096 L44.24,39.7216 L39.7152,44.2464 L87.2064,91.7344 L91.7312,87.2096 Z M173.4176,168.896 L216.2752,211.7536 L211.7504,216.2784 L168.8928,173.4208 L173.4176,168.896 Z");
       }
       return logo;
     }
 
-    function stateText(state) {
-      return {
-        live: "LIVE", warn: "ATTENTION", down: "DOWN",
-        idle: "ON DEMAND", unmeasured: "NO DATA"
-      }[state] || state.toUpperCase();
-    }
 
     function pins(group, box, left, right) {
       function side(items, x1, x2) {
@@ -1883,16 +1808,16 @@
         transform: "translate(" + box.x + " " + box.y + ")",
         "class": "net-circuit-node " + data.state, "data-tip": data.tip || ""
       }));
-      group.appendChild(svg("rect", { width: box.w, height: box.h, rx: 12, "class": "net-circuit-surface" }));
+      group.appendChild(svg("rect", { width: box.w, height: box.h, rx: 12, "class": "net-circuit-surface",
+        style: "stroke:color-mix(in srgb, " + data.brand + " 45%, var(--line-2))" }));
       group.appendChild(svg("path", {
         d: "M1 12Q1 1 12 1H" + (box.w - 12) + "Q" + (box.w - 1) + " 1 " + (box.w - 1)
-          + " 12V52H1Z", "class": "net-circuit-node-bar"
+          + " 12V52H1Z", "class": "net-circuit-node-bar",
+        style: "fill:color-mix(in srgb, " + data.brand + " 12%, var(--panel))"
       }));
-      addLogo(group, data.logo, 15, 13);
+      addLogo(group, data.logo, 13, 12);
       group.appendChild(svg("text", { x: 53, y: 24, "class": "net-circuit-node-title" })).textContent = data.title;
       group.appendChild(svg("text", { x: 53, y: 41, "class": "net-circuit-node-kicker" })).textContent = data.kicker;
-      group.appendChild(svg("text", { x: box.w - 13, y: 24, "class": "net-circuit-state" })).textContent = stateText(data.state);
-      group.appendChild(svg("circle", { cx: box.w - 17, cy: 41, r: 3.2, "class": "net-circuit-led" }));
       data.lines.forEach(function (line, index) {
         group.appendChild(svg("text", {
           x: 15, y: 75 + index * 19,
@@ -1913,15 +1838,16 @@
         width: coreBox.w, height: coreBox.h, rx: 15, "class": "net-circuit-surface"
       }));
       group.appendChild(svg("path", {
-        d: "M1 15Q1 1 15 1H445Q459 1 459 15V65H1Z", "class": "net-circuit-core-head"
+        d: "M1 15Q1 1 15 1H485Q499 1 499 15V65H1Z", "class": "net-circuit-core-head",
+        style: "fill:color-mix(in srgb, #ff9900 12%, var(--panel))"
       }));
-      addLogo(group, "ec2", 18, 20);
+      addLogo(group, "ec2", 18, 18);
       group.appendChild(svg("text", { x: 58, y: 30, "class": "net-circuit-core-title" })).textContent = "YOUR AWS EC2";
       group.appendChild(svg("text", { x: 58, y: 48, "class": "net-circuit-core-meta" })).textContent =
         "ap-south-1 · origin + workers";
-      group.appendChild(svg("text", { x: 438, y: 29, "class": "net-circuit-core-live" })).textContent =
-        stateText(coreState) + " · origin " + shown(origin, "ms");
-      group.appendChild(svg("text", { x: 438, y: 47, "class": "net-circuit-core-meta", "text-anchor": "end" })).textContent =
+      group.appendChild(svg("text", { x: 478, y: 29, "class": "net-circuit-core-live" })).textContent =
+        "origin " + shown(origin, "ms");
+      group.appendChild(svg("text", { x: 478, y: 47, "class": "net-circuit-core-meta", "text-anchor": "end" })).textContent =
         "RX " + shown(hostReceived) + " · TX " + shown(hostSent);
 
       function innerWire(d, state, flow, both) {
@@ -1945,15 +1871,17 @@
         + "M12 " + tunnelBusTop + "V" + tunnelBusBottom + "M12 126H22";
       innerWire(tunnelBus, cloudCore, 21, true);
       innerWire("M22 330H8V147H22", originState, 22);
-      innerWire("M248 147H230V177H16V300H22", tradeState, 23);
-      innerWire("M117 262V286", newsState, 24);
-      innerWire("M438 129H460", tradeTrunkState, 25, true);
-      innerWire("M438 209H440V129", "idle", 0);
-      innerWire("M212 207H230V274H337M349 274H446M458 274H460", newsState, 26, true);
-      innerWire("M438 241H456V510H460", "idle", 0);
-      innerWire("M0 526H10V550H450V280H343V262", "idle", 0);
+      innerWire("M273 147H250V177H16V300H22", tradeState, 23);
+      innerWire("M124 262V286", newsState, 24);
+      innerWire("M478 129H500", tradeTrunkState, 25, true);
+      innerWire("M480 129V570", "idle", 0);
+      innerWire("M480 281H500", futuresState, 0);
+      innerWire("M227 207H250V274H480", newsState, 26, true);
+      innerWire("M480 429H500", newsState, 0);
+      innerWire("M480 570H500", "idle", 0);
+      innerWire("M0 526H10V550H490V280H375V262", "idle", 0);
       group.appendChild(svg("circle", {
-        cx: 440, cy: 129, r: 3.2, "class": "net-circuit-junction " + tradeTrunkState
+        cx: 480, cy: 129, r: 3.2, "class": "net-circuit-junction " + tradeTrunkState
       }));
 
       function chip(x, y, w, title, role, value, state) {
@@ -1961,28 +1889,27 @@
           transform: "translate(" + x + " " + y + ")", "class": "net-circuit-chip " + state
         }));
         chipGroup.appendChild(svg("rect", { width: w, height: 74, rx: 9, "class": "net-circuit-surface" }));
-        chipGroup.appendChild(svg("circle", { cx: 14, cy: 16, r: 2.8, "class": "net-circuit-led" }));
-        chipGroup.appendChild(svg("text", { x: 25, y: 20, "class": "net-circuit-chip-title" })).textContent = title;
+        chipGroup.appendChild(svg("text", { x: 14, y: 20, "class": "net-circuit-chip-title" })).textContent = title;
         chipGroup.appendChild(svg("text", { x: 14, y: 40, "class": "net-circuit-chip-role" })).textContent = role;
         chipGroup.appendChild(svg("text", { x: 14, y: 59, "class": "net-circuit-chip-value" })).textContent = value;
       }
-      chip(22, 92, 190, "Website origin", "SERVES UI + LIVE JSON", "local RTT " + shown(origin, "ms"), originState);
-      chip(248, 92, 190, "Network checker", "STANDING LOOP · " + reading(snapshot.every, "s").toUpperCase(),
+      chip(22, 92, 205, "Website origin", "SERVES UI + LIVE JSON", "local RTT " + shown(origin, "ms"), originState);
+      chip(273, 92, 205, "Network checker", "STANDING LOOP · " + reading(snapshot.every, "s").toUpperCase(),
         "Spot " + shown(spot, "ms") + " · F " + shown(futures, "ms"), tradeState);
-      chip(22, 188, 190, "News runner", "STANDING LOOP · " + shown(newsInterval, "s"),
+      chip(22, 188, 205, "News runner", "STANDING LOOP · " + shown(newsInterval, "s"),
         "cycle " + shown(newsDuration, "s") + " · p95 " + shown(newsP95), newsState);
-      chip(248, 188, 190, "Trader command", "OWNER STARTED · ON DEMAND",
+      chip(273, 188, 205, "Trader command", "OWNER STARTED · ON DEMAND",
         "signed orders when used", "idle");
 
-      group.appendChild(svg("rect", { x: 22, y: 286, width: 416, height: 56, rx: 8, "class": "net-circuit-bus" }));
+      group.appendChild(svg("rect", { x: 22, y: 286, width: 456, height: 56, rx: 8, "class": "net-circuit-bus" }));
       group.appendChild(svg("text", { x: 36, y: 306, "class": "net-circuit-bus-title" })).textContent = "LIVE FILE BUS";
       group.appendChild(svg("text", { x: 36, y: 327, "class": "net-circuit-bus-value" })).textContent =
         "net.json + news.json";
       group.appendChild(svg("text", {
-        x: 422, y: 327, "class": "net-circuit-bus-value", "text-anchor": "end"
+        x: 462, y: 327, "class": "net-circuit-bus-value", "text-anchor": "end"
       })).textContent = "workers write · website reads";
 
-      group.appendChild(svg("rect", { x: 22, y: 363, width: 416, height: 96, rx: 9, "class": "net-circuit-stage-box" }));
+      group.appendChild(svg("rect", { x: 22, y: 363, width: 456, height: 96, rx: 9, "class": "net-circuit-stage-box" }));
       group.appendChild(svg("text", { x: 36, y: 383, "class": "net-circuit-bus-title" })).textContent =
         "LATEST SPOT REQUEST PATH";
       var stages = [
@@ -1990,36 +1917,38 @@
         ["TLS", shown(tls, "ms")], ["SERVER", shown(server, "ms")]
       ];
       stages.forEach(function (item, index) {
-        var x = 36 + index * 98;
+        var x = 36 + index * 104;
         group.appendChild(svg("rect", {
-          x: x, y: 395, width: 82, height: 48, rx: 6, "class": "net-circuit-stage-box"
+          x: x, y: 395, width: 88, height: 48, rx: 6, "class": "net-circuit-stage-box"
         }));
         group.appendChild(svg("text", { x: x + 10, y: 413, "class": "net-circuit-stage-name" })).textContent = item[0];
         group.appendChild(svg("text", { x: x + 10, y: 433, "class": "net-circuit-stage-value" })).textContent = item[1];
         if (index < stages.length - 1) {
           group.appendChild(svg("path", {
-            d: "M" + (x + 87) + " 419l6 4-6 4Z", "class": "net-circuit-stage-arrow"
+            d: "M" + (x + 93) + " 419l6 4-6 4Z", "class": "net-circuit-stage-arrow"
           }));
         }
       });
 
-      group.appendChild(svg("rect", { x: 22, y: 480, width: 416, height: 62, rx: 9, "class": "net-circuit-stage-box" }));
+      group.appendChild(svg("rect", { x: 22, y: 480, width: 456, height: 62, rx: 9, "class": "net-circuit-stage-box" }));
       group.appendChild(svg("text", { x: 36, y: 502, "class": "net-circuit-stage-name" })).textContent =
         "CLOCK / HOST SIGNALS";
       group.appendChild(svg("text", { x: 36, y: 525, "class": "net-circuit-stage-value" })).textContent =
         "Binance clock offset " + shown(clockOffset, "ms");
       group.appendChild(svg("text", {
-        x: 422, y: 525, "class": "net-circuit-stage-value", "text-anchor": "end"
+        x: 462, y: 525, "class": "net-circuit-stage-value", "text-anchor": "end"
       })).textContent = "origin " + shown(origin, "ms");
       pins(group, coreBox,
         tunnelCorePins.map(function (y) { return { y: y, state: cloudCore }; })
           .concat([{ y: 526, state: "idle" }]),
-        [{ y: 129, state: tradeTrunkState }, { y: 274, state: newsState }, { y: 510, state: "idle" }]);
+        [{ y: 129, state: tradeTrunkState }, { y: 281, state: futuresState },
+          { y: 429, state: newsState }, { y: 570, state: "idle" }]);
     }
 
     drawCore();
     module(browserBox, {
       title: "Your browser", kicker: "VIEWER", logo: "browser", state: browserState,
+      brand: "#4285f4",
       lines: ["net.json fetch " + shown(browser, "ms"), "download + parse · every 5 s"],
       left: [], right: [{ y: browserBox.h / 2 - 8, state: browserEdge },
         { y: browserBox.h / 2 + 8, state: browserEdge }],
@@ -2027,6 +1956,7 @@
     });
     module(cloudBox, {
       title: "Cloudflare", kicker: "EDGE + TUNNEL", logo: "cloudflare", state: tunnelState,
+      brand: "#f38020",
       lines: ["edge RTT " + shown(tunnelRtt, "ms"),
         amount(connections, "live connection", "live connections"),
         "lost " + shown(lost) + " · errors " + shown(errors),
@@ -2039,18 +1969,21 @@
     });
     module(spotBox, {
       title: "Binance Spot", kicker: "API.BINANCE.COM", logo: "binance", state: spotState,
+      brand: "#f0b90b",
       lines: ["round trip " + shown(spot, "ms"), "clock offset " + shown(clockOffset, "ms")],
       left: [spotBox.h / 2], right: [],
       tip: "EC2 to Binance Spot over public HTTPS: " + shown(spot, "ms")
     });
     module(futuresBox, {
       title: "Binance Futures", kicker: "FAPI.BINANCE.COM", logo: "binance", state: futuresState,
+      brand: "#f0b90b",
       lines: ["round trip " + shown(futures, "ms"), "hedge-leg API path"],
       left: [futuresBox.h / 2], right: [],
       tip: "EC2 to Binance Futures over public HTTPS: " + shown(futures, "ms")
     });
     module(newsBox, {
       title: "News sources", kicker: "PUBLIC RSS + JSON", logo: "news", state: newsState,
+      brand: "#f26522",
       lines: [amount(newsLive, "live group", "live groups"),
         amount(newsDelayed, "delayed group", "delayed groups") + " · "
           + amount(newsFailed, "failed feed", "failed feeds"),
@@ -2061,26 +1994,23 @@
     });
     module(secretsBox, {
       title: "Secrets Manager", kicker: "AWS CREDENTIALS PATH", logo: "secrets", state: "idle",
+      brand: "#dd344c",
       lines: ["read only at command start"], left: [secretsBox.h / 2], right: [],
       tip: "Credentials are retrieved by Trader only when a command starts; the UI never receives them."
     });
     module(macBox, {
       title: "Your Mac", kicker: "OWNER TERMINAL", logo: "terminal", state: "idle",
+      brand: "#3a3a3c",
       lines: ["starts commands on demand"], left: [], right: [macBox.h / 2],
       tip: "The owner-control path exists only when you connect."
     });
     module(ssmBox, {
       title: "AWS SSM", kicker: "SYSTEMS MANAGER", logo: "ssm", state: "idle",
+      brand: "#e7157b",
       lines: ["commands + output on demand"], left: [ssmBox.h / 2], right: [ssmBox.h / 2],
       tip: "Systems Manager carries owner commands and output on demand."
     });
 
-    var note = netMap.appendChild(el("div", "net-map-note"));
-    note.appendChild(el("span", "",
-      "External moving light scales from the latest RTT or cadence; internal light shows direction. It is an operational signal, not packet capture."));
-    var sampleAge = hasSnapshot ? Math.max(0, Math.round((Date.now() - snapshot.at) / 1000)) : false;
-    note.appendChild(el("span", "",
-      "UI 5 s · probe " + reading(snapshot.every, "s") + " · sample age " + reading(sampleAge, "s")));
   }
 
   window.addEventListener("resize", function () {
@@ -2101,9 +2031,6 @@
   function buildNetwork(page, head) {
     var acts = el("div", "set-actions");
     acts.appendChild(refreshButton(fetchNet));
-    var status = acts.appendChild(el("span", "status"));
-    netDot = status.appendChild(el("i", "status-dot"));
-    netAge = status.appendChild(el("span"));
     var sw = el("button", "set-switch" + (netView.on ? " on" : ""));
     sw.setAttribute("role", "switch");
     sw.setAttribute("aria-checked", netView.on ? "true" : "false");
@@ -2117,6 +2044,9 @@
       if (netView.on) { fetchNet(); }
     });
     acts.appendChild(sw);
+    var status = acts.appendChild(el("span", "status"));
+    netDot = status.appendChild(el("i", "status-dot"));
+    netAge = status.appendChild(el("span"));
     head.appendChild(acts);
     netEl = page.appendChild(el("div"));
     drawNet();

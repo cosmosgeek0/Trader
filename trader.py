@@ -37,6 +37,8 @@ elif action == "table":
     market.table(sys.argv)
 elif action == "board":
     market.board(sys.argv)
+elif action == "events":
+    market.events(sys.argv)
 elif action == "volume":
     market.volume(sys.argv)
 elif action == "view":

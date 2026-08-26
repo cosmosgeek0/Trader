@@ -20,6 +20,10 @@ except FileNotFoundError:
 
 wrote = 0
 while True:
+    with open("/var/lib/trader-logs-control/enabled") as file:
+        if file.read(1) != "1":
+            time.sleep(EVERY)
+            continue
     resync = cursor is None
     command = ["journalctl", "-q", "--no-pager", "-o", "json", "--output-fields=MESSAGE,_SYSTEMD_UNIT,UNIT,_PID"]
     for unit in UNITS:

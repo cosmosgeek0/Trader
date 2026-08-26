@@ -239,6 +239,8 @@
     newsBar = null;
     clearInterval(newsTimer);
     netEl = null;
+    netSync = null;
+    logsSync = null;
     netPlot = null;
     netMap = null;
     clearInterval(netTimer);
@@ -258,8 +260,9 @@
     acctSection = null;
     lawSection = null;
     lawModeSeg = null;
-    lawQueue = [];
-    rulesError = "";
+    lawSliding = false;
+    lawRepaintPending = false;
+    lawPaintKey = "";
     closeLawPop();
     closeReceipt();
     clearInterval(acctTimer);
@@ -271,8 +274,19 @@
     marketsEl = null;
     marketsBar = null;
     marketsPaint = null;
+    marketsRows = {};
     marketsSide = null;
     clearInterval(marketsTimer);
+    if (basisRequest) {
+      clearTimeout(basisRequest.timeout);
+      basisRequest.controller.abort();
+    }
+    basisRequest = null;
+    basisEl = null;
+    basisPaint = null;
+    basisDot = null;
+    basisAge = null;
+    clearInterval(basisTimer);
     var page = document.createElement("div");
     page.className = "page-shell";
     var head = document.createElement("div");
@@ -287,10 +301,7 @@
     } else if (h === "machine") {
       buildStub(page, "machine", [["all", "All"], ["bnorm", "Basis"], ["brev", "Reverse"], ["spread", "Volume"]],
         ["#", "Strategy", "State", "Detail", "Value"]);
-    } else if (h === "basis") {
-      buildStub(page, "basis", [["all", "All"], ["bnorm", "Normal"], ["brev", "Reverse"]],
-        ["#", "Token", "Price", "Basis", "Reverse", "Funding"]);
-    } else if (h === "volume") {
+    } else if (h === "basis") { buildBasis(page, head); } else if (h === "volume") {
       buildStub(page, "volume", [["all", "All"], ["spot", "Spot only"], ["fut", "Futures only"]],
         ["#", "Token", "Price", "Volume 24h", "Vol 1h"]);
     } else if (h === "settings") { buildSettings(page, head); }
@@ -784,16 +795,20 @@
     drawAge();
   }
 
-  function newsState(on) {
-    fetch("/api/news", on === undefined ? { headers: { "X-Requested-With": "XMLHttpRequest" } }
+  function feedState(api, on, apply) {
+    fetch(api, on === undefined ? { headers: { "X-Requested-With": "XMLHttpRequest" } }
       : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: on }) })
       .then(function (r) { return r.json(); })
-      .then(function (d) {
-        newsOn = d.on;
-        drawSwitch();
-        fetchNews();
-      })
+      .then(function (d) { apply(d.on); })
       .catch(function () { /* state unknown, stays as shown */ });
+  }
+
+  function newsState(on) {
+    feedState("/api/news", on, function (v) {
+      newsOn = v;
+      drawSwitch();
+      if (v || !newsData) { fetchNews(); }
+    });
   }
 
   function searchBox(name, placeholder, value, change) {
@@ -1074,7 +1089,7 @@
     newsBar = page.appendChild(el("div", "news-pills"));
     newsEl = page.appendChild(el("div", "news"));
     drawSwitch();
-    if (newsData) { drawNews(); }
+    drawNews();
     newsState();
     newsTimer = setInterval(newsState, 60000);
   }
@@ -1174,6 +1189,7 @@
   }
 
   function drawAcctStatus() {
+    acctRedrawFlush();
     if (!acctEl) { return; }
     if (!acctOn) {
       acctDot.className = "status-dot";
@@ -1562,22 +1578,32 @@
     }).then(function (d) {
       if (gen !== rulesGen) { return; }
       rulesFetching = false;
+      var oldVersion = lawRules() ? lawRules().version : null;
       rulesOk = true;
       rulesData = d;
-      rulesError = rulesStale
-        ? "The law changed elsewhere — your last change was not saved." : "";
-      drawLaw();
+      if (rulesStale) {
+        rulesError = "The law changed elsewhere — your last change was not saved.";
+      }
+      var conflictFresh = rulesStale && d.rules.version !== oldVersion;
+      if (!lawQueue.length && !rulesBusy) { drawLaw(conflictFresh); }
       lawQueueFlush();
     }).catch(function () {
       if (gen !== rulesGen) { return; }
       rulesFetching = false;
       rulesOk = false;
-      lawQueue = [];
-      drawLaw();
+      if (!rulesBusy) {
+        var dropped = lawQueue;
+        lawQueue = [];
+        dropped.forEach(function (q) {
+          delete lawPending[q[0].join(".")];
+          if (q[2]) { q[2]("The law could not be loaded — not saved."); }
+        });
+      }
+      if (!rulesBusy && !lawQueue.length) { drawLaw(true); }
     });
   }
 
-  function postRules(doc, done, pop) {
+  function postRules(doc, done, pop, wrote, fromQueue) {
     if (rulesBusy) { if (done) { done("Still writing — try again."); } return; }
     if (pop && pop.version !== null) { doc.version = pop.version; }
     rulesBusy = true;
@@ -1590,23 +1616,41 @@
       .then(function (got) {
         rulesBusy = false;
         if (got.status === 200) {
+          lawPendRelease(wrote);
           rulesGen++;
           rulesFetching = false;
+          rulesOk = true;
           rulesData = got.body;
-          rulesError = "";
-          rulesStale = false;
-          lawModePreview = null;
+          if (!fromQueue) {
+            rulesError = "";
+            rulesStale = false;
+          }
+          lawQueue.forEach(function (q) {
+            if (q[3] === doc.version) { q[3] = got.body.rules.version; }
+          });
+          if (lawShownVersion === doc.version) {
+            lawShownVersion = got.body.rules.version;
+          }
           if (done) { done(null); }
-          drawLaw(true);
+          if (!lawQueue.length) { drawLaw(true); }
           lawQueueFlush();
         } else if (got.status === 409) {
           if (pop === lawPopEl) { closeLawPop(); }
           rulesStale = true;
-          lawModePreview = null;
+          var kept = [];
+          lawQueue.forEach(function (q) {
+            if (q[3] === doc.version) {
+              delete lawPending[q[0].join(".")];
+              if (q[2]) { q[2]("The law changed elsewhere — nothing saved."); }
+            } else { kept.push(q); }
+          });
+          lawQueue = kept;
+          lawPendRelease(wrote);
           fetchRules();
           if (done) { done("The law changed elsewhere — nothing saved."); }
+          drawLaw(true);
         } else {
-          lawModePreview = null;
+          lawPendRelease(wrote);
           if (done) { done(got.body && got.body.error ? got.body.error : "Rejected."); }
           drawLaw(true);
           lawQueueFlush();
@@ -1614,7 +1658,7 @@
       })
       .catch(function () {
         rulesBusy = false;
-        lawModePreview = null;
+        lawPendRelease(wrote);
         if (done) { done("Could not reach the law file."); }
         drawLaw(true);
         lawQueueFlush();
@@ -1623,10 +1667,10 @@
 
   var lawQueue = [];
 
-  function lawWrite(path, value, done, pop) {
-    if (!pop && (rulesBusy || rulesFetching || !rulesData)) {
+  function lawWrite(path, value, done, pop, fromQueue, pinV) {
+    if (!pop && !fromQueue && (rulesBusy || rulesFetching || !rulesData)) {
       lawQueue = lawQueue.filter(function (q) { return q[0].join(".") !== path.join("."); });
-      lawQueue.push([path, value, done]);
+      lawQueue.push([path, value, done, lawShownVersion]);
       return;
     }
     if (!rulesData) { if (done) { done("The law is not loaded."); } return; }
@@ -1634,13 +1678,24 @@
     var d = doc;
     for (var i = 0; i < path.length - 1; i++) { d = d[path[i]]; }
     d[path[path.length - 1]] = value;
-    postRules(doc, done, pop);
+    var pin = fromQueue ? pinV : lawShownVersion;
+    if (!pop && pin !== null && pin !== undefined) { doc.version = pin; }
+    postRules(doc, done, pop, path.join("."), fromQueue);
+  }
+
+  function lawPendRelease(wrote) {
+    if (!wrote) { return; }
+    var newer = lawQueue.some(function (q) { return q[0].join(".") === wrote; });
+    if (!newer) { delete lawPending[wrote]; }
   }
 
   function lawQueueFlush() {
-    if (!lawQueue.length || rulesBusy || rulesFetching || !rulesData) { return; }
+    if (!lawQueue.length || rulesBusy || rulesFetching || !rulesData) {
+      if (!lawQueue.length) { acctRedrawFlush(); }
+      return;
+    }
     var next = lawQueue.shift();
-    lawWrite(next[0], next[1], next[2]);
+    lawWrite(next[0], next[1], next[2], null, true, next[3]);
   }
 
 
@@ -1683,6 +1738,7 @@
     lawPopEl.dim.remove();
     lawPopEl.card.remove();
     lawPopEl = null;
+    acctRedrawFlush();
   }
 
   function openLawPop(title, layers, subText, body, onSave) {
@@ -1704,8 +1760,10 @@
     var save = button("Save", "set-action law-apply-go", function () {
       save.textContent = "Writing…";
       onSave(function (fail) {
-        if (fail) { save.textContent = "Save"; err.textContent = fail; }
-        else if (lawPopEl === mine) { closeLawPop(); }
+        if (fail) {
+          if (lawPopEl === mine) { save.textContent = "Save"; err.textContent = fail; }
+          else { rulesError = fail; drawLaw(true); }
+        } else if (lawPopEl === mine) { closeLawPop(); }
       }, mine);
     });
     foot.appendChild(save);
@@ -1798,12 +1856,14 @@
 
   function lawLifePop() {
     var m = lawRules().machine;
+    var pendLife = lawPending["machine.lifetime_usdt"];
+    var lifeVal = pendLife !== undefined ? pendLife : m.lifetime_usdt;
     var body = el("div");
     var now = el("div", "law-pop-now");
     now.appendChild(el("span", "", "Used so far"));
     now.appendChild(el("b", "", fmtMoneyExact(m.used_usdt)));
     body.appendChild(now);
-    var made = lawNumberInput(m.lifetime_usdt, { money: true });
+    var made = lawNumberInput(lifeVal, { money: true });
     body.appendChild(made.line);
     var mine = openLawPop("Lifetime allowance", ["engine"],
       "Everything the bot may use in its whole life. Only your reset starts it fresh.",
@@ -1814,8 +1874,10 @@
       });
     var reset = button("Reset used to $0", "set-action", function () {
       lawWrite(["machine", "used_usdt"], 0, function (fail) {
-        if (fail) { mine.err.textContent = fail; }
-        else if (lawPopEl === mine) { closeLawPop(); }
+        if (fail) {
+          if (lawPopEl === mine) { mine.err.textContent = fail; }
+          else { rulesError = fail; drawLaw(true); }
+        } else if (lawPopEl === mine) { closeLawPop(); }
       }, mine);
     });
     reset.style.margin = "10px 0 2px";
@@ -1846,7 +1908,7 @@
         var doc = lawClone(rulesData.rules);
         doc.wallets[name].use_usdt = pu.value;
         doc.wallets[name].move_usdt = pm.value;
-        postRules(doc, done, pop);
+        postRules(doc, done, pop, "wallets." + name);
       });
     u.input.focus();
     u.input.select();
@@ -1920,23 +1982,50 @@
   function lawControls(list) {
     var m = lawRules().machine;
 
+    var pendLife = lawPending["machine.lifetime_usdt"];
+    var lifeNow = pendLife !== undefined ? pendLife : m.lifetime_usdt;
     var lt = lawRow(list, "LIFETIME ALLOWANCE", "all");
     var ltVal = lt.right.appendChild(el("span", "law-value",
-      fmtMoneyExact(m.used_usdt) + " used of " + fmtMoneyExact(m.lifetime_usdt)));
+      fmtMoneyExact(m.used_usdt) + " used of " + fmtMoneyExact(lifeNow)));
     var slide = el("input", "law-slider");
     slide.type = "range";
-    slide.min = "0";
-    slide.max = String(Math.max(1000, m.lifetime_usdt * 2));
+    slide.min = String(lifeNow % 25);
+    slide.max = String(Math.max(1000, Math.ceil(lifeNow * 2 / 25) * 25));
     slide.step = "25";
-    slide.value = String(m.lifetime_usdt);
+    slide.value = String(lifeNow);
     slide.setAttribute("aria-label", "Lifetime allowance");
+    var slideMoved = false;
+    slide.addEventListener("pointerdown", function () { lawSliding = true; });
+    var slideEnd = function (canceled) {
+      lawSliding = false;
+      setTimeout(function () {
+        if (lawSliding) { return; }
+        if (canceled && slideMoved) {
+          slideMoved = false;
+          lawRepaintPending = false;
+          drawLaw(true);
+          return;
+        }
+        if (lawRepaintPending) { lawRepaintPending = false; drawLaw(true); }
+      }, 0);
+    };
+    slide.addEventListener("pointerup", function () { slideEnd(false); });
+    slide.addEventListener("pointercancel", function () { slideEnd(true); });
+    slide.addEventListener("lostpointercapture", function () { slideEnd(true); });
     slide.addEventListener("input", function () {
+      slideMoved = true;
       ltVal.textContent = fmtMoneyExact(m.used_usdt) + " used of " + fmtMoneyExact(+slide.value);
     });
     slide.addEventListener("change", function () {
+      lawSliding = false;
+      slideMoved = false;
+      lawPending["machine.lifetime_usdt"] = +slide.value;
       lawWrite(["machine", "lifetime_usdt"], +slide.value, function (fail) {
         if (fail) { rulesError = fail; }
       });
+      setTimeout(function () {
+        if (lawRepaintPending && !lawSliding) { lawRepaintPending = false; drawLaw(true); }
+      }, 0);
     });
     lt.right.appendChild(slide);
     lt.act.appendChild(lawEditButton(lawLifePop));
@@ -1963,18 +2052,28 @@
 
     ["spot", "margin", "futures", "funding"].forEach(function (name) {
       var w = lawRules().wallets[name];
+      var pend = lawPending["wallets." + name + ".on"];
+      var now = pend !== undefined ? pend : w.on;
       var r = lawRow(list, name[0].toUpperCase() + name.slice(1) + " transfers",
         { spot: "spot", margin: "scales", futures: "fut", funding: "spread" }[name]);
-      if (!w.on) { r.row.className += " law-off"; }
-      r.right.appendChild(el("span", "law-value", w.on
+      if (!now) { r.row.className += " law-off"; }
+      var wVal = r.right.appendChild(el("span", "law-value", now
         ? "use " + fmtMoneyExact(w.use_usdt) + " · move " + fmtMoneyExact(w.move_usdt)
         : "OFF"));
-      var sw = el("button", "set-switch" + (w.on ? " on" : ""));
+      var sw = el("button", "set-switch" + (now ? " on" : ""));
       sw.setAttribute("role", "switch");
-      sw.setAttribute("aria-checked", w.on ? "true" : "false");
+      sw.setAttribute("aria-checked", now ? "true" : "false");
       sw.setAttribute("aria-label", name + " transfers");
       sw.addEventListener("click", function () {
-        lawWrite(["wallets", name, "on"], !w.on, function (fail) {
+        now = !now;
+        lawPending["wallets." + name + ".on"] = now;
+        sw.classList.toggle("on", now);
+        sw.setAttribute("aria-checked", now ? "true" : "false");
+        wVal.textContent = now
+          ? "use " + fmtMoneyExact(w.use_usdt) + " · move " + fmtMoneyExact(w.move_usdt)
+          : "OFF";
+        r.row.classList.toggle("law-off", !now);
+        lawWrite(["wallets", name, "on"], now, function (fail) {
           if (fail) { rulesError = fail; }
         });
       });
@@ -1983,16 +2082,24 @@
     });
 
     var loan = lawRules().wallets.loan;
+    var lpend = lawPending["wallets.loan.on"];
+    var lnow = lpend !== undefined ? lpend : loan.on;
     var lr = lawRow(list, "Loan transfers", "chain");
-    if (!loan.on) { lr.row.className += " law-off"; }
-    lr.right.appendChild(el("span", "law-value",
-      loan.on ? "borrow " + fmtMoneyExact(loan.borrow_usdt) : "OFF"));
-    var lsw = el("button", "set-switch" + (loan.on ? " on" : ""));
+    if (!lnow) { lr.row.className += " law-off"; }
+    var lVal = lr.right.appendChild(el("span", "law-value",
+      lnow ? "borrow " + fmtMoneyExact(loan.borrow_usdt) : "OFF"));
+    var lsw = el("button", "set-switch" + (lnow ? " on" : ""));
     lsw.setAttribute("role", "switch");
-    lsw.setAttribute("aria-checked", loan.on ? "true" : "false");
+    lsw.setAttribute("aria-checked", lnow ? "true" : "false");
     lsw.setAttribute("aria-label", "Loan transfers");
     lsw.addEventListener("click", function () {
-      lawWrite(["wallets", "loan", "on"], !loan.on, function (fail) {
+      lnow = !lnow;
+      lawPending["wallets.loan.on"] = lnow;
+      lsw.classList.toggle("on", lnow);
+      lsw.setAttribute("aria-checked", lnow ? "true" : "false");
+      lVal.textContent = lnow ? "borrow " + fmtMoneyExact(loan.borrow_usdt) : "OFF";
+      lr.row.classList.toggle("law-off", !lnow);
+      lawWrite(["wallets", "loan", "on"], lnow, function (fail) {
         if (fail) { rulesError = fail; }
       });
     });
@@ -2011,7 +2118,9 @@
         rulesOk ? "Loading the law…" : "The law file is unreachable."));
       return section;
     }
-    var mode = lawModePreview || lawGet(["machine", "mode"]);
+    lawShownVersion = lawRules().version;
+    var pendMode = lawPending["machine.mode"];
+    var mode = pendMode !== undefined ? pendMode : lawGet(["machine", "mode"]);
     section.className += " law-mode-" + mode;
     var lhead = el("div", "set-row law-grid news-head-row law-head");
     lhead.appendChild(el("span", "mkt-rank", "#"));
@@ -2036,21 +2145,41 @@
   var LAW_MODES = [["blocked", "Blocked"], ["limited", "Limited"], ["full", "Full"]];
   var lawModeSeg = null;
 
-  var lawModePreview = null;
-
   function lawModeSet(mode) {
-    if (lawRules() && mode === lawGet(["machine", "mode"]) && !lawQueue.length) { return; }
-    lawModePreview = mode;
-    drawLaw(true);
+    var pendM = lawPending["machine.mode"];
+    var showing = pendM !== undefined ? pendM : (lawRules() && lawGet(["machine", "mode"]));
+    if (mode === showing) { return; }
+    lawPending["machine.mode"] = mode;
+    if (lawSection) {
+      lawSection.className = lawSection.className
+        .replace(/ law-mode-\w+/g, "") + " law-mode-" + mode;
+    }
+    if (lawModeSeg) {
+      lawModeSeg.forEach(function (m) { m[1].classList.toggle("on", m[0] === mode); });
+    }
     lawWrite(["machine", "mode"], mode, function (fail) {
       if (fail) { rulesError = fail; }
     });
   }
 
+  var lawPaintKey = "";
+  var lawShownVersion = null;
+  var lawPending = {};
+  var lawSliding = false;
+  var lawRepaintPending = false;
+
   function drawLaw(force) {
     if (!acctEl || !lawSection) { return; }
-    var busy = !force && !!(lawPopEl || lawSection.contains(document.activeElement));
-    if (!busy) {
+    if (lawSliding) {
+      if (force) { lawRepaintPending = true; }
+      return;
+    }
+    var key = (lawRules() ? lawRules().version : "-") + "|" + rulesError + "|"
+      + JSON.stringify(lawPending) + "|" + rulesOk;
+    var busy = !force && !!(lawPopEl || lawSection.contains(document.activeElement)
+      || lawQueue.length || rulesBusy);
+    if (!busy && (force || key !== lawPaintKey)) {
+      lawPaintKey = key;
       var next = acctControls();
       lawSection.replaceWith(next);
       lawSection = next;
@@ -2061,16 +2190,39 @@
       }
     }
     if (lawModeSeg) {
-      var now = lawModePreview || lawGet(["machine", "mode"]);
+      var pm = lawPending["machine.mode"];
+      var now = pm !== undefined ? pm : lawGet(["machine", "mode"]);
       lawModeSeg.forEach(function (m) { m[1].classList.toggle("on", m[0] === now); });
+    }
+  }
+
+  var acctRedrawPending = false;
+
+  function lawEngaged() {
+    return !!(lawPopEl || lawQueue.length || rulesBusy
+      || (lawSection && document.activeElement
+        && lawSection.contains(document.activeElement)));
+  }
+
+  function acctRedrawFlush() {
+    if (acctRedrawPending && acctEl && acctData && !lawEngaged()) {
+      acctRedrawPending = false;
+      drawAcct();
     }
   }
 
   function paintAcct() {
     if (!acctEl) { return; }
-    if (!acctPaint) { drawAcct(); return; }
+    var busyInLaw = lawEngaged();
+    if (!acctPaint) {
+      if (busyInLaw) { acctRedrawPending = true; } else { drawAcct(); }
+      return;
+    }
     var rows = acctSorted();
-    if (rows.map(acctKey).join(",") !== acctPaint.key) { drawAcct(); return; }
+    if (rows.map(acctKey).join(",") !== acctPaint.key) {
+      if (busyInLaw) { acctRedrawPending = true; } else { drawAcct(); }
+      return;
+    }
     rows.forEach(function (r) {
       var c = acctPaint.map[acctKey(r)];
       var amount = fmtQty(r.amount);
@@ -2093,8 +2245,6 @@
     var side = acctRail();
     acctSide.replaceWith(side);
     acctSide = side;
-    var busyInLaw = !!(lawPopEl || (lawSection && document.activeElement
-      && lawSection.contains(document.activeElement)));
     if (!busyInLaw) { drawLaw(); }
     drawTrans();
     drawAcctStatus();
@@ -2102,6 +2252,7 @@
 
   function drawAcct() {
     if (!acctEl) { return; }
+    acctRedrawPending = false;
     drawAcctStatus();
     acctEl.textContent = "";
     if (!acctData) {
@@ -2312,8 +2463,9 @@
     document.body.appendChild(card);
   }
 
-  function fetchLogs() {
-    if (!logsEl || !logsView.on || document.hidden || logsRequest) { return; }
+  function fetchLogs(force) {
+    if (!logsEl || logsRequest) { return; }
+    if (force !== true && (!logsView.on || document.hidden)) { return; }
     var controller = new AbortController();
     var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
     logsRequest = request;
@@ -2594,19 +2746,21 @@
       logsPage = 1;
       drawLogs();
     }));
-    acts.appendChild(refreshButton(fetchLogs));
+    acts.appendChild(refreshButton(function () { fetchLogs(true); }));
     var sw = el("button", "set-switch" + (logsView.on ? " on" : ""));
     sw.setAttribute("role", "switch");
     sw.setAttribute("aria-checked", logsView.on ? "true" : "false");
     sw.setAttribute("aria-label", "Logs display");
-    sw.addEventListener("click", function () {
-      logsView.on = !logsView.on;
+    logsSync = function (v) {
+      logsView.on = v;
       saveLogs();
-      sw.classList.toggle("on", logsView.on);
-      sw.setAttribute("aria-checked", logsView.on ? "true" : "false");
+      sw.classList.toggle("on", v);
+      sw.setAttribute("aria-checked", v ? "true" : "false");
       drawLogsStatus();
-      if (logsView.on) { fetchLogs(); }
-    });
+      if (v) { fetchLogs(); }
+    };
+    sw.addEventListener("click", function () { feedState("/api/logs", !logsView.on, logsSync); });
+    feedState("/api/logs", undefined, logsSync);
     acts.appendChild(sw);
     var live = acts.appendChild(el("span", "status"));
     logsDot = live.appendChild(el("i", "status-dot"));
@@ -2616,7 +2770,7 @@
     logsBar = page.appendChild(el("div", "news-pills"));
     logsEl = page.appendChild(el("div", "logs"));
     drawLogs();
-    fetchLogs();
+    fetchLogs(true);
     logsTimer = setInterval(fetchLogs, 5000);
   }
 
@@ -2632,12 +2786,19 @@
   var marketsQuery = "";
   var marketsPage = 1;
   var marketsPaint = null;
+  var marketsRows = {};
   var marketsSide = null;
   var MKT_CATS = [["all", "All"], ["both", "Both"], ["spot", "Spot only"], ["fut", "Futures only"]];
   var MKT_COLS = [["tok", "Token"], ["price", "Price"], ["chg", "24h %"], ["vol", "Volume 24h"],
-    ["v1x", "Vol 1h"], ["ratio", "F/S"], ["fund", "Funding"], ["ngap", "Basis"],
-    ["rgap", "Reverse"], ["bh", "Basis /1h"]];
+    ["v1x", "Vol 1h"], ["ratio", "F/S"], ["fund", "Funding"], ["bas", "Basis"],
+    ["spr", "Spread"], ["bh", "Basis /1h"]];
   var marketsView = { cat: "all", sort: "vol", dir: -1, on: true };
+  try { marketsView = JSON.parse(localStorage.getItem("quant.markets")) || marketsView; } catch (e) { /* private mode */ }
+  marketsView.on = marketsView.on !== false;
+
+  function saveMarkets() {
+    try { localStorage.setItem("quant.markets", JSON.stringify(marketsView)); } catch (e) { /* private mode */ }
+  }
 
   function tokenName(r) { return r.sym.slice(-4) === "USDT" ? r.sym.slice(0, -4) : r.sym; }
 
@@ -2649,6 +2810,7 @@
     }
     var img = el("img", "mkt-badge");
     img.alt = "";
+    img.loading = "lazy";
     var at = 0;
     img.src = tries[0];
     img.addEventListener("error", function () {
@@ -2670,7 +2832,23 @@
       if (r.svol === undefined && r.fvol === undefined) { return null; }
       return (r.svol || 0) + (r.fvol || 0);
     }
+    if (key === "bas") { return rowBasis(r); }
+    if (key === "spr") { return rowSpread(r); }
     return r[key] !== undefined ? r[key] : null;
+  }
+
+  function rowBasis(r) {
+    return r.bas !== undefined ? r.bas : null;
+  }
+
+  function rowSpread(r) {
+    if (r.sbid === undefined || r.fbid === undefined) { return null; }
+    var sb = parseFloat(r.sbid);
+    var sa = parseFloat(r.sask);
+    var fb = parseFloat(r.fbid);
+    var fa = parseFloat(r.fask);
+    if (sb <= 0 || fb <= 0) { return null; }
+    return (sa - sb) / ((sa + sb) / 2) * 100 + (fa - fb) / ((fa + fb) / 2) * 100;
   }
 
   function fmtPrice(r) {
@@ -2698,7 +2876,8 @@
     var q = marketsQuery.trim().toUpperCase();
     return marketsData.rows.filter(function (r) {
       if (marketsView.cat !== "all" && r.cat !== marketsView.cat) { return false; }
-      return !q || r.sym.indexOf(q) !== -1 || (r.fsym && r.fsym.indexOf(q) !== -1);
+      return !q || r.sym.indexOf(q) !== -1 || (r.fsym && r.fsym.indexOf(q) !== -1)
+        || (r.name && r.name.toUpperCase().indexOf(q) !== -1);
     });
   }
 
@@ -2816,10 +2995,8 @@
       b.insertBefore(icon(name), b.firstChild);
       side.appendChild(boxEl);
     }
-    railBox("bnorm", spreadBox("Basis · normal", rows.map(function (r) { return r.ngap; }),
+    railBox("bnorm", spreadBox("Basis", rows.map(function (r) { return rowBasis(r); }),
       steps(-1, 1, 0.1), "#3b82f6", 5));
-    railBox("brev", spreadBox("Basis · reverse", rows.map(function (r) { return r.rgap; }),
-      steps(-1, 1, 0.1), "#8b5cf6", 5));
 
     var up = 0;
     var downCount = 0;
@@ -2870,48 +3047,96 @@
       steps(-0.1, 0.1, 0.01), "#d9a52b", 5));
     railBox("change", spreadBox("24h change", rows.map(function (r) { return marketsValue(r, "chg"); }),
       steps(-10, 10, 1), "#10b981", 5));
-    railBox("spread", spreadBox("Spot spread", rows.map(function (r) {
-      if (r.sbid === undefined || r.sask === undefined) { return null; }
-      var bid = parseFloat(r.sbid);
-      var ask = parseFloat(r.sask);
-      return bid > 0 ? (ask - bid) / ((ask + bid) / 2) * 100 : null;
-    }), steps(0, 0.5, 0.025), "#ec4899", 4));
+    railBox("spread", spreadBox("Spread", rows.map(function (r) { return rowSpread(r); }),
+      steps(0, 1, 0.05), "#ec4899", 4));
     return side;
   }
 
   function marketsRowTexts(r, chg) {
+    var spr = rowSpread(r);
     return [fmtPrice(r), chg === null || chg === undefined ? "—" : Math.abs(chg).toFixed(2) + "%",
       fmtVol(marketsValue(r, "vol")),
       r.v1x === undefined ? "—" : r.v1x.toFixed(1) + "×",
       r.ratio === undefined ? "—" : r.ratio.toFixed(2),
       r.fund === undefined ? "—" : fmtSigned(r.fund, 4),
-      fmtSigned(r.ngap, 3), fmtSigned(r.rgap, 3), fmtSigned(r.bh, 3)];
+      fmtSigned(rowBasis(r), 3), spr === null ? "\u2014" : spr.toFixed(3) + "%", fmtSigned(r.bh, 3)];
+  }
+
+  function marketsRowEl(r) {
+    var row = el("div", "mkt-row");
+    row.dataset.sym = r.sym;
+    row.appendChild(el("span", "mkt-rank", ""));
+    var tok = el("span", "news-source");
+    tok.appendChild(tokenBadge(tokenName(r)));
+    var col = tok.appendChild(el("span", "news-source-col"));
+    col.appendChild(el("span", "news-source-name", tokenName(r)));
+    var sub = [r.name, r.mult && "×" + r.mult + " futures"].filter(Boolean).join(" · ");
+    if (sub) { col.appendChild(el("span", "news-domain", sub)); }
+    row.appendChild(tok);
+    row.texts = [];
+    for (var ci = 0; ci < 9; ci += 1) {
+      var cell = el("span", "mkt-num");
+      if (ci === 1) { row.arr = cell.appendChild(el("span", "mkt-arr", "")); }
+      var tn = document.createTextNode("");
+      cell.appendChild(tn);
+      if (ci === 5) { row.fundHours = cell.appendChild(el("span", "mkt-int", "")); }
+      row.appendChild(cell);
+      row.texts.push(tn);
+    }
+    return row;
+  }
+
+  function marketsRowUpdate(r, rank) {
+    var row = marketsRows[r.sym] || (marketsRows[r.sym] = marketsRowEl(r));
+    row.firstChild.textContent = String(rank);
+    var chg = marketsValue(r, "chg");
+    marketsRowTexts(r, chg).forEach(function (txt, i) {
+      if (row.texts[i].nodeValue !== txt) { row.texts[i].nodeValue = txt; }
+    });
+    var hrs = r.hours === undefined ? "" : "/" + r.hours + "h";
+    if (row.fundHours.textContent !== hrs) { row.fundHours.textContent = hrs; }
+    var cls = "mkt-arr" + (chg > 0 ? " up" : chg < 0 ? " down" : "");
+    if (row.arr.className !== cls) {
+      row.arr.className = cls;
+      row.arr.textContent = chg > 0 ? "▲" : chg < 0 ? "▼" : "";
+    }
+    return row;
   }
 
   function paintMarkets() {
     if (!marketsEl) { return; }
     if (!marketsPaint) { drawMarkets(); return; }
     var rows = marketsSort(marketsShown());
+    if (rows.length !== marketsPaint.total) { drawMarkets(); return; }
     var pages = Math.max(1, Math.ceil(rows.length / NEWS_PAGE_SIZE));
     marketsPage = Math.min(marketsPage, pages);
     var start = (marketsPage - 1) * NEWS_PAGE_SIZE;
     var slice = rows.slice(start, start + NEWS_PAGE_SIZE);
     var key = rows.length + ":" + slice.map(function (r) { return r.sym; }).join(",");
-    if (key !== marketsPaint.key) { drawMarkets(); return; }
-    slice.forEach(function (r) {
-      var cells = marketsPaint.map[r.sym];
-      var chg = marketsValue(r, "chg");
-      marketsRowTexts(r, chg).forEach(function (txt, i) {
-        var node = cells[i].lastChild.nodeType === 3 ? cells[i].lastChild : cells[i].firstChild;
-        if (node.nodeValue !== txt) { node.nodeValue = txt; }
+    var body = marketsPaint.body;
+    if (key !== marketsPaint.key) {
+      var first = {};
+      Array.prototype.forEach.call(body.children, function (n) {
+        first[n.dataset.sym] = n.getBoundingClientRect().top;
       });
-      var arr = cells[1].firstChild;
-      var cls = "mkt-arr" + (chg > 0 ? " up" : chg < 0 ? " down" : "");
-      if (arr.className !== cls) {
-        arr.className = cls;
-        arr.textContent = chg > 0 ? "▲" : chg < 0 ? "▼" : "";
-      }
-    });
+      slice.forEach(function (r, i) {
+        var row = marketsRowUpdate(r, start + i + 1);
+        if (body.children[i] !== row) { body.insertBefore(row, body.children[i] || null); }
+      });
+      while (body.children.length > slice.length) { body.lastChild.remove(); }
+      Array.prototype.forEach.call(body.children, function (n) {
+        var was = first[n.dataset.sym];
+        if (was === undefined) {
+          n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: "ease" });
+          return;
+        }
+        var d = was - n.getBoundingClientRect().top;
+        if (d) { n.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }], { duration: 260, easing: "ease" }); }
+      });
+      marketsPaint.key = key;
+    } else {
+      slice.forEach(function (r, i) { marketsRowUpdate(r, start + i + 1); });
+    }
     var fresh = marketsRail(rows);
     marketsSide.replaceWith(fresh);
     marketsSide = fresh;
@@ -2962,32 +3187,11 @@
     marketsPage = Math.min(marketsPage, pages);
     var start = (marketsPage - 1) * NEWS_PAGE_SIZE;
     var slice = rows.slice(start, start + NEWS_PAGE_SIZE);
-    marketsPaint = { key: rows.length + ":" + slice.map(function (r) { return r.sym; }).join(","), map: {} };
-    slice.forEach(function (r, i) {
-      var row = el("div", "mkt-row");
-      row.appendChild(el("span", "mkt-rank", String(start + i + 1)));
-      var tok = el("span", "news-source");
-      tok.appendChild(tokenBadge(tokenName(r)));
-      var col = tok.appendChild(el("span", "news-source-col"));
-      col.appendChild(el("span", "news-source-name", tokenName(r)));
-      if (r.mult) { col.appendChild(el("span", "news-domain", "×" + r.mult + " futures")); }
-      row.appendChild(tok);
-      var chg = marketsValue(r, "chg");
-      var cells = [];
-      marketsRowTexts(r, chg).forEach(function (t, i) {
-        var cell = el("span", "mkt-num");
-        if (i === 1) {
-          cell.appendChild(el("span", "mkt-arr" + (chg > 0 ? " up" : chg < 0 ? " down" : ""),
-            chg > 0 ? "▲" : chg < 0 ? "▼" : ""));
-        }
-        cell.appendChild(document.createTextNode(t));
-        if (i === 5 && r.hours !== undefined) { cell.appendChild(el("span", "mkt-int", "/" + r.hours + "h")); }
-        row.appendChild(cell);
-        cells.push(cell);
-      });
-      marketsPaint.map[r.sym] = cells;
-      list.appendChild(row);
-    });
+    var body = el("div");
+    slice.forEach(function (r, i) { body.appendChild(marketsRowUpdate(r, start + i + 1)); });
+    list.appendChild(body);
+    marketsPaint = { key: rows.length + ":" + slice.map(function (r) { return r.sym; }).join(","),
+      body: body, total: rows.length };
     main.appendChild(list);
     if (!rows.length) {
       main.appendChild(el("div", "news-empty", "Nothing matches these filters."));
@@ -3016,6 +3220,7 @@
     sw.setAttribute("aria-label", "Live market data");
     sw.addEventListener("click", function () {
       marketsView.on = !marketsView.on;
+      saveMarkets();
       sw.classList.toggle("on", marketsView.on);
       sw.setAttribute("aria-checked", marketsView.on ? "true" : "false");
       drawMarketsStatus();
@@ -3030,8 +3235,181 @@
     marketsBar = page.appendChild(el("div", "news-pills"));
     marketsEl = page.appendChild(el("div", "markets"));
     drawMarkets();
-    if (marketsView.on) { fetchMarkets(true); }
-    marketsTimer = setInterval(fetchMarkets, 2000);
+    fetchMarkets(true);
+    marketsTimer = setInterval(fetchMarkets, 1000);
+  }
+
+  /* ---- basis: the crossing log ---- */
+  var basisEl = null;
+  var basisTimer = null;
+  var basisRequest = null;
+  var basisData = null;
+  var basisOk = true;
+  var basisDot = null;
+  var basisAge = null;
+  var basisPaint = null;
+
+  function eventKey(e) { return e.sym + ":" + e.open; }
+
+  function eventClock(ms) {
+    return hoverTimeFmt.format(new Date(ms)) + "." + Math.floor(ms % 1000 / 100);
+  }
+
+  function eventTexts(e) {
+    var dur = e.live ? (Date.now() - e.open) / 1000 : e.dur;
+    return [eventClock(e.open),
+      "+" + e.net.toFixed(3) + "%",
+      "+" + e.peak.toFixed(3) + "%",
+      (e.pbas > 0 ? "+" : "") + e.pbas.toFixed(3) + "%",
+      e.upk === undefined ? "—" : "$" + (e.upk >= 1000 ? (e.upk / 1000).toFixed(1) + "K" : String(e.upk)),
+      (dur >= 60 ? Math.floor(dur / 60) + "m " + Math.round(dur % 60) + "s"
+        : dur >= 1 ? dur.toFixed(1) + "s" : Math.round(dur * 1000) + "ms"),
+      e.live ? "live" : (e.why || "ended") + " " + eventClock(e.close)];
+  }
+
+  function eventRow(e) {
+    var row = el("div", "mkt-row");
+    row.dataset.key = eventKey(e);
+    row.appendChild(el("span", "mkt-rank", ""));
+    var tok = el("span", "news-source");
+    tok.appendChild(tokenBadge(tokenName(e)));
+    var col = tok.appendChild(el("span", "news-source-col"));
+    col.appendChild(el("span", "news-source-name", tokenName(e)));
+    col.appendChild(el("span", "news-domain", e.dir === "+" ? "futures above spot" : "spot above futures · pool open"));
+    row.appendChild(tok);
+    row.texts = [];
+    for (var ci = 0; ci < 7; ci += 1) {
+      var cell = el("span", "mkt-num" + (ci === 2 || ci === 4 ? " up" : ""));
+      var tn = document.createTextNode("");
+      cell.appendChild(tn);
+      row.appendChild(cell);
+      row.texts.push(tn);
+    }
+    row.statusCell = row.children[row.children.length - 1];
+    return row;
+  }
+
+  function drawBasisStatus() {
+    if (!basisDot) { return; }
+    var stale = !basisData || Date.now() - basisData.at > 10000;
+    var blind = basisData && basisData.ready === false;
+    basisDot.className = "status-dot " + (!basisOk ? "dead" : !basisData ? "" : stale || blind ? "stale" : "live");
+    basisAge.textContent = !basisOk ? "Offline" : !basisData ? "" : stale ? "Stale" : blind ? "Feed down" : "Live";
+  }
+
+  function drawBasis() {
+    if (!basisEl) { return; }
+    basisEl.textContent = "";
+    basisEl.appendChild(el("div", "basis-cap",
+      "Crossings · net = basis − spread − taker fees ("
+      + (basisData && basisData.fees ? basisData.fees.toFixed(2) : "0.30")
+      + "%, ETH-reference), before funding and borrow carry · negative side only when pool > 0 · the log stays"));
+    var list = el("div", "news-list");
+    var headRow = el("div", "mkt-row news-head-row");
+    headRow.appendChild(el("span", "mkt-rank", "#"));
+    ["Token", "When", "Cross net", "Net peak", "Basis @ pk", "Size @ pk $", "Lived", "State"].forEach(function (c) {
+      headRow.appendChild(el("span", "mkt-head", c));
+    });
+    list.appendChild(headRow);
+    var body = list.appendChild(el("div"));
+    var note = list.appendChild(el("div", "news-empty",
+      "No crossing recorded yet."));
+    note.hidden = false;
+    basisPaint = { body: body, note: note, rows: {} };
+    basisEl.appendChild(list);
+    if (basisData) { paintBasis(); }
+    drawBasisStatus();
+  }
+
+  function paintBasis() {
+    if (!basisEl || !basisData) { return; }
+    if (!basisPaint) { drawBasis(); return; }
+    var events = (basisData.events || []).slice(0, 300);
+    var body = basisPaint.body;
+    var first = {};
+    Array.prototype.forEach.call(body.children, function (n) {
+      first[n.dataset.key] = n.getBoundingClientRect().top;
+    });
+    var keep = {};
+    events.forEach(function (e, i) {
+      var key = eventKey(e);
+      keep[key] = true;
+      var row = basisPaint.rows[key];
+      if (!row) {
+        row = eventRow(e);
+        basisPaint.rows[key] = row;
+      }
+      row.firstChild.textContent = String(i + 1);
+      eventTexts(e).forEach(function (t, ci) {
+        if (row.texts[ci].nodeValue !== t) { row.texts[ci].nodeValue = t; }
+      });
+      var cls = "mkt-num" + (e.live ? " up" : "");
+      if (row.statusCell.className !== cls) { row.statusCell.className = cls; }
+      if (body.children[i] !== row) { body.insertBefore(row, body.children[i] || null); }
+    });
+    Object.keys(basisPaint.rows).forEach(function (key) {
+      if (!keep[key]) {
+        basisPaint.rows[key].remove();
+        delete basisPaint.rows[key];
+      }
+    });
+    Array.prototype.forEach.call(body.children, function (n) {
+      var was = first[n.dataset.key];
+      if (was === undefined) {
+        n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: "ease" });
+        return;
+      }
+      var d = was - n.getBoundingClientRect().top;
+      if (d) { n.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }], { duration: 260, easing: "ease" }); }
+    });
+    basisPaint.note.hidden = events.length > 0;
+    basisPaint.note.textContent = basisData.ready === false
+      ? "No crossing recorded — feed connecting."
+      : "No crossing recorded yet.";
+    drawBasisStatus();
+  }
+
+  function fetchBasis(force) {
+    if (!basisEl || basisRequest) { return; }
+    if (force !== true && document.hidden) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    basisRequest = request;
+    fetch("/events.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (basisRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        basisRequest = null;
+        if (!basisEl) { return; }
+        basisOk = true;
+        basisData = d;
+        paintBasis();
+      }).catch(function () {
+        if (basisRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        basisRequest = null;
+        if (!basisEl) { return; }
+        basisOk = false;
+        drawBasisStatus();
+      });
+  }
+
+  function buildBasis(page, head) {
+    page.classList.add("basis");
+    var acts = el("div", "set-actions news-acts");
+    acts.appendChild(refreshButton(function () { fetchBasis(true); }));
+    var live = acts.appendChild(el("span", "status"));
+    basisDot = live.appendChild(el("i", "status-dot"));
+    basisAge = live.appendChild(el("span"));
+    head.appendChild(acts);
+    basisEl = page.appendChild(el("div", "basis-lists"));
+    drawBasis();
+    fetchBasis(true);
+    basisTimer = setInterval(fetchBasis, 1000);
   }
 
   /* ---- network: the probe's one file, one graph at a time ---- */
@@ -3039,6 +3417,8 @@
   var netOk = true;
   var netEl = null;
   var netDot = null;
+  var netSync = null;
+  var logsSync = null;
   var netAge = null;
   var netTimer = null;
   var netResize = null;
@@ -3112,8 +3492,9 @@
     };
   }
 
-  function fetchNet() {
-    if (!netEl || !netView.on || document.hidden || netRequest) { return; }
+  function fetchNet(force) {
+    if (!netEl || netRequest) { return; }
+    if (force !== true && (!netView.on || document.hidden)) { return; }
     var controller = new AbortController();
     var request = { controller: controller, timeout: null };
     request.timeout = setTimeout(function () { controller.abort(); }, 12000);
@@ -3635,20 +4016,13 @@
     var originState = health([origin]);
     var spotState = health([spot]);
     var futuresState = health([futures]);
-    var spotPathState = spotState;
-    var tradeState = worst(spotState, futuresState);
-    var newsState = health([newsLive, newsDelayed, newsFailed, newsInterval, newsDuration, newsP95],
-      newsDelayed.value > 0 || newsFailed.value > 0);
-    if (typeof newsLive.value === "number" && newsLive.value <= 0) { newsState = "down"; }
-    var coreState = worst(originState, tradeState, newsState);
-
     var dnsState = health([dns]);
     var tcpState = health([tcp]);
     var tlsState = health([tls]);
     var serverState = health([server]);
     var stageState = worst(dnsState, tcpState, tlsState, serverState);
-    spotPathState = spotState;
-    tradeState = worst(spotState, futuresState, stageState);
+    var spotPathState = spotState;
+    var tradeState = worst(spotState, futuresState, stageState);
     if (typeof connections.value === "number" && connections.value > 0 && connections.value < 4) {
       tunnelState = "warn";
     }
@@ -3656,8 +4030,12 @@
     var newsSourceState = health([newsLive, newsDelayed, newsFailed],
       newsDelayed.value > 0 || newsFailed.value > 0);
     if (typeof newsLive.value === "number" && newsLive.value <= 0) { newsSourceState = "down"; }
-    newsState = worst(newsRunnerState, newsSourceState);
-    coreState = worst(originState, tradeState, newsState);
+    if (!newsOn || newsLive.note === "off") {
+      newsRunnerState = "idle";
+      newsSourceState = "idle";
+    }
+    var newsState = worst(newsRunnerState, newsSourceState);
+    var coreState = worst(originState, tradeState, newsState);
 
     var clientWidth = Math.max(netMap.clientWidth, 320);
     var W = Math.max(2200, Math.min(clientWidth, 2860));
@@ -4493,24 +4871,39 @@
       drawStatus();
       drawConnectionMap();
       fetchNet();
+      if (netSync) { feedState("/api/net", undefined, netSync); }
+      feedState("/api/news", undefined, function (v) {
+        newsOn = v;
+        drawConnectionMap();
+      });
     }
-    if (!document.hidden && logsEl) { fetchLogs(); }
+    if (!document.hidden && logsEl) {
+      fetchLogs();
+      if (logsSync) { feedState("/api/logs", undefined, logsSync); }
+    }
+    if (!document.hidden && newsEl) { newsState(); }
   });
 
   function buildNetwork(page, head) {
     var acts = el("div", "set-actions");
-    acts.appendChild(refreshButton(fetchNet));
+    acts.appendChild(refreshButton(function () { fetchNet(true); }));
     var sw = el("button", "set-switch" + (netView.on ? " on" : ""));
     sw.setAttribute("role", "switch");
     sw.setAttribute("aria-checked", netView.on ? "true" : "false");
     sw.setAttribute("aria-label", "Network display");
-    sw.addEventListener("click", function () {
-      netView.on = !netView.on;
+    netSync = function (v) {
+      netView.on = v;
       saveNet();
-      sw.classList.toggle("on", netView.on);
-      sw.setAttribute("aria-checked", netView.on ? "true" : "false");
-      drawNet();
-      if (netView.on) { fetchNet(); }
+      sw.classList.toggle("on", v);
+      sw.setAttribute("aria-checked", v ? "true" : "false");
+      drawStatus();
+      if (v) { fetchNet(); }
+    };
+    sw.addEventListener("click", function () { feedState("/api/net", !netView.on, netSync); });
+    feedState("/api/net", undefined, netSync);
+    feedState("/api/news", undefined, function (v) {
+      newsOn = v;
+      if (netEl) { drawConnectionMap(); }
     });
     acts.appendChild(sw);
     var status = acts.appendChild(el("span", "status"));
@@ -4520,7 +4913,7 @@
     page.classList.add("network");
     netEl = page.appendChild(el("div"));
     drawNet();
-    fetchNet();
+    fetchNet(true);
     netTimer = setInterval(fetchNet, 5000);
   }
 

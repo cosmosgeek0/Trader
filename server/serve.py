@@ -17,12 +17,15 @@ net_state = "/var/lib/trader-net"
 logs_state = "/var/lib/trader-logs"
 board_state = "/var/lib/trader-board"
 account_state = "/var/lib/trader-account"
-news_control = "/var/lib/trader-news-control/enabled"
 socket_path = "/run/trader-ui-socket/ui.sock"
 
+feed_controls = {"/api/news": "/var/lib/trader-news-control/enabled",
+                 "/api/net": "/var/lib/trader-net-control/enabled",
+                 "/api/logs": "/var/lib/trader-logs-control/enabled"}
 
-def news_enabled():
-    with open(news_control) as file:
+
+def feed_on(control):
+    with open(control) as file:
         return file.read(1) == "1"
 
 
@@ -58,7 +61,7 @@ def rules_bad(doc, base, path=""):
         return None if doc in RULES_SPECIAL[path] else path + ": one of " + ", ".join(RULES_SPECIAL[path])
     if path == "excluded_assets":
         ok = isinstance(doc, list) and all(
-            isinstance(a, str) and re.fullmatch(r"[A-Z0-9]{2,20}", a) for a in doc)
+            isinstance(a, str) and re.fullmatch(r"\S{1,20}", a) for a in doc)
         return None if ok else path + ": list of asset codes"
     if isinstance(base, bool):
         return None if isinstance(doc, bool) else path + ": true or false"
@@ -148,14 +151,14 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/sessions":
             access.sessions(self)
             return
-        if path == "/api/news":
-            self.send_body(json.dumps({"on": news_enabled()}).encode())
+        if path in feed_controls:
+            self.send_body(json.dumps({"on": feed_on(feed_controls[path])}).encode())
             return
         if path == "/api/rules":
             self.send_body(json.dumps({"rules": rules_load()}).encode())
             return
         folders = {"/news.json": news_state, "/net.json": net_state,
-                   "/logs.json": logs_state, "/board.json": board_state,
+                   "/logs.json": logs_state, "/board.json": board_state, "/events.json": board_state,
                    "/account.json": account_state}
         if path in folders:
             try:
@@ -188,7 +191,7 @@ class Handler(SimpleHTTPRequestHandler):
         if not access.authorize(self, True):
             return
         path = self.clean_path()
-        if path not in ("/api/logout", "/api/news", "/api/rules"):
+        if path != "/api/logout" and path != "/api/rules" and path not in feed_controls:
             self.send_empty(403)
             return
         length = int(self.headers.get("Content-Length", 0))
@@ -226,10 +229,10 @@ class Handler(SimpleHTTPRequestHandler):
                 os.chmod(rules_state + "/rules.log", 0o640)
             self.send_body(json.dumps({"rules": data if lines else current}).encode())
             return
-        if path == "/api/news":
-            with open(news_control, "w") as file:
+        if path in feed_controls:
+            with open(feed_controls[path], "w") as file:
                 file.write("1" if data.get("on") is True else "0")
-            self.send_body(json.dumps({"on": news_enabled()}).encode())
+            self.send_body(json.dumps({"on": feed_on(feed_controls[path])}).encode())
             return
         access.logout(self, data)
         self.send_body(b"{}")

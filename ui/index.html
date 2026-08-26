@@ -846,7 +846,9 @@
     color: color-mix(in srgb, var(--ink) 63%, transparent); }
   .overview .news-head-row { grid-template-columns: 34px repeat(2, 1fr) 64px; }
   .machine .news-head-row { grid-template-columns: 34px repeat(3, 1fr) 64px; }
-  .basis .news-head-row { grid-template-columns: 34px repeat(4, 1fr) 64px; }
+  .basis .mkt-row { min-width: 1020px; grid-template-columns: 34px 1.3fr repeat(6, 1fr) 110px; }
+  .basis-cap { margin: 24px 0 0; font: 500 14px InterVariable, Inter, -apple-system, sans-serif;
+    color: color-mix(in srgb, var(--ink) 63%, transparent); }
   .volume .news-head-row { grid-template-columns: 34px repeat(3, 1fr) 64px; }
   .account .acct-row .news-source-name { font-size: 16px; font-weight: 485; }
   .account .news-domain { font-size: 14px; font-weight: 485;
@@ -889,7 +891,7 @@
   .markets .mkt-head.on::before, .account .mkt-head.on::before { content: "\2193 "; }
   .markets .mkt-head.on.asc::before, .account .mkt-head.on.asc::before { content: "\2191 "; }
   .news-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .news.off, .logs.off, .markets.off { opacity: 0.35; }
+  .news.off, .logs.off, .markets.off, .net-off { opacity: 0.35; }
   .news-search {
     width: 224px; height: 32px; padding: 0 12px;
     display: flex; align-items: center; gap: 8px;
@@ -1596,7 +1598,9 @@
     .side[data-state="expanded"] ~ main .topbar-right { left: 184px; }
     .page-shell { padding: 88px 16px 48px; }
     .set-row { grid-template-columns: 1fr auto; }
-    .set-row.law-grid { grid-template-columns: minmax(0, 1fr) auto auto; }
+    .set-row.law-grid { grid-template-columns: 34px minmax(0, 1fr) auto 80px; }
+    .law-box { overflow-x: auto; }
+    .law-box .law-head, .law-rows .set-row.law-grid { min-width: 480px; }
     .set-head { flex-wrap: wrap; }
     .set-actions { max-width: 100%; overflow-x: auto; }
   }

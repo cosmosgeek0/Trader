@@ -164,12 +164,11 @@ def table(argv):
         return
 
 
-def board(argv):
+def universe():
     spots = {s["symbol"]: s["baseAsset"] for s in public(SPOT + "/api/v3/exchangeInfo")["symbols"]
              if s["quoteAsset"] == "USDT" and s["status"] == "TRADING" and s["isSpotTradingAllowed"]}
     perps = {s["symbol"]: s["baseAsset"] for s in public(FAPI + "/fapi/v1/exchangeInfo")["symbols"]
              if s["contractType"] == "PERPETUAL" and s["status"] == "TRADING" and s["quoteAsset"] == "USDT"}
-    hours = {i["symbol"]: i["fundingIntervalHours"] for i in public(FAPI + "/fapi/v1/fundingInfo")}
     by_base = {base: sym for sym, base in spots.items()}
     fut_of = {}
     for fsym, base in perps.items():
@@ -178,6 +177,253 @@ def board(argv):
             fut_of[by_base[m.group(2)]] = (fsym, {"1000": 1000, "1000000": 1000000, "1M": 1000000}[m.group(1)])
         else:
             fut_of[fsym] = (fsym, 1)
+    return spots, perps, fut_of
+
+
+def events(argv):
+    import asyncio
+
+    import websockets
+
+    spots, perps, fut_of = universe()
+    both = {sym: fut for sym, fut in fut_of.items() if sym in spots}
+    futmap = {fut[0]: (sym, Decimal(fut[1])) for sym, fut in both.items()}
+    sfil = {}
+    for s in public(SPOT + "/api/v3/exchangeInfo")["symbols"]:
+        if s["symbol"] in both:
+            f = {x["filterType"]: x for x in s["filters"]}
+            lot, mkt = f["LOT_SIZE"], f["MARKET_LOT_SIZE"]
+            step = Decimal(mkt["stepSize"]) or Decimal(lot["stepSize"])
+            minq = max(Decimal(lot["minQty"]), Decimal(mkt["minQty"]))
+            maxs = [Decimal(x["maxQty"]) for x in (lot, mkt) if Decimal(x["maxQty"]) > 0]
+            maxq = min(maxs) if maxs else Decimal(0)
+            noti = Decimal(f["NOTIONAL"]["minNotional"]) if f["NOTIONAL"]["applyMinToMarket"] else Decimal(0)
+            sfil[s["symbol"]] = (step, minq, maxq, noti)
+    ffil = {}
+    for s in public(FAPI + "/fapi/v1/exchangeInfo")["symbols"]:
+        if s["symbol"] in futmap:
+            f = {x["filterType"]: x for x in s["filters"]}
+            ffil[s["symbol"]] = (Decimal(f["MARKET_LOT_SIZE"]["stepSize"]),
+                                 Decimal(f["MARKET_LOT_SIZE"]["minQty"]),
+                                 Decimal(f["MARKET_LOT_SIZE"]["maxQty"]),
+                                 Decimal(f["MIN_NOTIONAL"]["notional"]))
+    staker = Decimal(signed(SPOT + "/api/v3/account", {"omitZeroBalances": "true"})["commissionRates"]["taker"])
+    ftaker = Decimal(signed(FAPI + "/fapi/v1/commissionRate", {"symbol": "ETHUSDT"})["takerCommissionRate"])
+    fees = float((staker + ftaker) * 2 * 100)
+    pairs = {p["symbol"] for p in signed(SPOT + "/sapi/v1/margin/allPairs", {})
+             if p["isMarginTrade"] and p["isSellAllowed"] and p["isBuyAllowed"]}
+    borrowable = {a["assetName"] for a in signed(SPOT + "/sapi/v1/margin/allAssets", {}) if a["isBorrowable"]}
+    pool = {}
+    quotes = {}
+    live = {}
+    done = []
+    above = {}
+    pending = {}
+    seen = set()
+    ready = {"s": False, "f": False}
+    try:
+        old = json.load(open("/var/lib/trader-board/events.json"))
+        for e in old.get("events", []):
+            if "usd" not in e:
+                continue
+            if e.pop("live", False):
+                e["close"] = old["at"]
+                e["why"] = "cut"
+            if "close" in e:
+                e["dur"] = round((e["close"] - e["open"]) / 1000, 3)
+            done.append(e)
+        done.sort(key=lambda e: e["open"])
+        del done[:-300]
+    except (FileNotFoundError, ValueError):
+        pass
+    print(f"EVENTS watching {len(both)} pairs, fees {fees:.2f}%, bar = spread + fees, "
+          f"size = matched touch dollars, {len(done)} prior events kept", flush=True)
+
+    def gauge(sym):
+        q = quotes.get(sym)
+        if not q or "s" not in q or "f" not in q:
+            return None
+        sb, sa = q["s"][0], q["s"][1]
+        fb, fa = q["f"][0], q["f"][1]
+        if sb <= 0 or sa <= 0 or fb <= 0 or fa <= 0:
+            return None
+        mult = futmap[both[sym][0]][1]
+        smid = (sb + sa) / 2
+        fmid = (fb + fa) / 2 / mult
+        bas = float((fmid - smid) / smid * 100)
+        spr = float((sa - sb) / smid * 100) + float((fa - fb) / (fmid * mult) * 100)
+        return bas, spr, abs(bas) - spr - fees
+
+    def close_event(e, now, why):
+        e["close"] = now
+        e["dur"] = round((now - e["open"]) / 1000, 3)
+        e["why"] = why
+        done.append(e)
+        del done[:-300]
+        del live[e["sym"]]
+        print(f"CLOSE {e['sym']} {why} after {e['dur']}s, peak net {e['peak']:+.3f}%", flush=True)
+
+    def touch_usd(sym, dirn):
+        q = quotes[sym]
+        sb, sa, sqb, sqa = q["s"][:4]
+        fb, fa, fqb, fqa = q["f"][:4]
+        fsym = both[sym][0]
+        mult = futmap[fsym][1]
+        sstep, sminq, smaxq, snoti = sfil[sym]
+        fstep, fminq, fmaxq, fnoti = ffil[fsym]
+        if dirn == "+":
+            tokens = min(sqa, fqb * mult)
+            price = sa
+            fpx = fb
+        else:
+            tokens = min(sqb, fqa * mult, pool.get(spots[sym], Decimal(0)))
+            price = sb
+            fpx = fa
+        if smaxq > 0:
+            tokens = min(tokens, smaxq)
+        if fmaxq > 0:
+            tokens = min(tokens, fmaxq * mult)
+        tokens = round_step(tokens, max(sstep, fstep * mult))
+        if tokens < sminq or tokens < fminq * mult:
+            return 0
+        usd = tokens * price
+        if usd < snoti or tokens * fpx / mult < fnoti:
+            return 0
+        return round(float(usd))
+
+    def evaluate(sym, now):
+        g = gauge(sym)
+        e = live.get(sym)
+        if g is None:
+            above.pop(sym, None)
+            seen.discard(sym)
+            pending.pop(sym, None)
+            return
+        bas, spr, net = g
+        d = "+" if bas > 0 else "-"
+        if net <= 0:
+            pending.pop(sym, None)
+        if net < -0.05:
+            above.pop(sym, None)
+        fresh = sym not in seen
+        seen.add(sym)
+        if e is not None:
+            if (bas > 0) != (e["dir"] == "+"):
+                close_event(e, now, "flip")
+                e = None
+            else:
+                if net > e["peak"]:
+                    e["peak"] = net
+                    e["pbas"] = bas
+                    e["upk"] = touch_usd(sym, e["dir"])
+                if net <= 0:
+                    close_event(e, now, "faded")
+                return
+        if fresh:
+            if net > 0:
+                above[sym] = d
+            return
+        p = pending.get(sym)
+        if p is not None and p["dir"] != d:
+            del pending[sym]
+            p = None
+        if p is not None:
+            if now - p["open"] >= 300:
+                del pending[sym]
+                live[sym] = {"sym": sym, "dir": d, "open": p["open"], "skew": p["skew"],
+                             "bas": p["bas"], "spr": p["spr"], "net": p["net"], "usd": p["usd"],
+                             "upk": p["usd"] if p["net"] >= net else touch_usd(sym, d),
+                             "peak": max(p["net"], net), "pbas": p["bas"] if p["net"] >= net else bas}
+                print(f"OPEN {sym} {d} net {p['net']:+.3f}% size ${p['usd']} "
+                      f"bas {p['bas']:+.3f}% spr {p['spr']:.3f}% confirmed after {now - p['open']} ms", flush=True)
+            return
+        if net > 0 and above.get(sym) != d:
+            if bas < 0 and (sym not in pairs or spots[sym] not in borrowable
+                            or pool.get(spots[sym], Decimal(0)) <= 0):
+                return
+            above[sym] = d
+            q = quotes[sym]
+            pending[sym] = {"dir": d, "open": now, "skew": int(abs(q["s"][4] - q["f"][4])),
+                            "bas": round(bas, 4), "spr": round(spr, 4), "net": round(net, 4),
+                            "usd": touch_usd(sym, d)}
+
+    async def pools():
+        while True:
+            try:
+                rows = await asyncio.to_thread(signed, SPOT + "/sapi/v1/margin/available-inventory",
+                                               {"type": "MARGIN"})
+                fresh = {a: Decimal(v) for a, v in rows["assets"].items()}
+                pool.clear()
+                pool.update(fresh)
+                now = int(time.time() * 1000)
+                for sym in list(seen):
+                    if sym not in live:
+                        evaluate(sym, now)
+            except (Exception, SystemExit) as error:
+                pool.clear()
+                print("pool refresh failed, pool marked unknown:", error, flush=True)
+            await asyncio.sleep(30)
+
+    async def flush():
+        while True:
+            await asyncio.sleep(1)
+            rows = [dict(e, live=True) for e in sorted(live.values(), key=lambda e: e["open"], reverse=True)]
+            rows += [dict(e, live=False) for e in reversed(done)][:300 - len(rows)]
+            keys = ("sym", "dir", "open", "skew", "bas", "spr", "net", "usd", "upk", "peak", "pbas",
+                    "close", "dur", "why", "live")
+            out = [{k: round(e[k], 4) if k in ("peak", "pbas") else e[k] for k in keys if k in e} for e in rows]
+            with open("/var/lib/trader-board/events.tmp", "w") as f:
+                json.dump({"at": int(time.time() * 1000), "fees": fees,
+                           "ready": ready["s"] and ready["f"], "events": out}, f)
+            os.replace("/var/lib/trader-board/events.tmp", "/var/lib/trader-board/events.json")
+
+    async def stream(url, names, venue):
+        while True:
+            ready[venue] = False
+            for sym, q in quotes.items():
+                q.pop(venue, None)
+                seen.discard(sym)
+                above.pop(sym, None)
+                pending.pop(sym, None)
+            try:
+                async with websockets.connect(url, ping_interval=20) as ws:
+                    for i in range(0, len(names), 100):
+                        await ws.send(json.dumps({"method": "SUBSCRIBE", "params": names[i:i + 100], "id": i + 1}))
+                    async for raw in ws:
+                        d = json.loads(raw)
+                        s = d.get("s")
+                        if venue == "s":
+                            sym = s if s in both else None
+                        else:
+                            sym = futmap[s][0] if s in futmap else None
+                        if sym:
+                            now = int(time.time() * 1000)
+                            ready[venue] = True
+                            quotes.setdefault(sym, {})[venue] = (Decimal(d["b"]), Decimal(d["a"]),
+                                                                 Decimal(d["B"]), Decimal(d["A"]), now)
+                            evaluate(sym, now)
+            except (websockets.WebSocketException, OSError, json.JSONDecodeError) as error:
+                ready[venue] = False
+                for sym, q in quotes.items():
+                    q.pop(venue, None)
+                    seen.discard(sym)
+                    above.pop(sym, None)
+                    pending.pop(sym, None)
+                print(venue, "stream reconnect:", error, flush=True)
+                await asyncio.sleep(3)
+
+    async def main():
+        await asyncio.gather(
+            stream("wss://stream.binance.com:9443/ws", [s.lower() + "@bookTicker" for s in both], "s"),
+            stream("wss://fstream.binance.com/ws", [f.lower() + "@bookTicker" for f in futmap], "f"),
+            pools(), flush())
+
+    asyncio.run(main())
+
+
+def board(argv):
+    spots, perps, fut_of = universe()
+    coins = {c["coin"]: c["name"] for c in signed(SPOT + "/sapi/v1/capital/config/getall", {})}
     tokens = spots.keys() | fut_of.keys()
     count = {"both": len(spots.keys() & fut_of.keys()), "spot": len(spots.keys() - fut_of.keys()),
              "fut": len(fut_of.keys() - spots.keys()), "total": len(tokens)}
@@ -191,7 +437,8 @@ def board(argv):
     mark = False
     try:
         while True:
-            if time.time() - pool_at > 30:
+            tick = time.time()
+            if tick - pool_at > 30:
                 pool = {a: Decimal(v) for a, v in signed(SPOT + "/sapi/v1/margin/available-inventory",
                                                          {"type": "MARGIN"})["assets"].items()}
                 pool_at = time.time()
@@ -201,6 +448,7 @@ def board(argv):
                 day_at = time.time()
                 mark = True
             if time.time() - hour_at > 180:
+                hours = {i["symbol"]: i["fundingIntervalHours"] for i in public(FAPI + "/fapi/v1/fundingInfo")}
                 names = sorted(spots)
                 hour = {}
                 for i in range(0, len(names), 100):
@@ -221,49 +469,48 @@ def board(argv):
                 s, f, p = sb.get(sym), fb.get(fsym), prem.get(fsym)
                 sd = day.get(("s", sym)) if sym in spots else None
                 fd = day.get(("f", fsym)) if fsym else None
+                base = spots.get(sym) or perps[fsym]
                 r = {"sym": sym, "cat": "both" if sym in spots and fsym else "spot" if sym in spots else "fut",
-                     "pool": pool.get(spots.get(sym) or perps[fsym], Decimal(0)) > 0}
+                     "pool": pool.get(base, Decimal(0)) > 0}
+                if coins.get(base, base) != base:
+                    r["name"] = coins[base]
                 if fsym and fsym != sym:
                     r.update(fsym=fsym, mult=mult)
                 if s:
-                    r.update(sbid=s["bidPrice"], sask=s["askPrice"], sbq=s["bidQty"], saq=s["askQty"])
+                    r.update(sbid=s["bidPrice"], sask=s["askPrice"])
                 if f:
-                    r.update(fbid=f["bidPrice"], fask=f["askPrice"], fbq=f["bidQty"], faq=f["askQty"])
+                    r.update(fbid=f["bidPrice"], fask=f["askPrice"])
                 if p:
-                    fund = Decimal(p["lastFundingRate"]) * 100
-                    r.update(fund=round(float(fund), 6), hours=hours.get(fsym, 8),
-                             fday=round(float(fund * 24 / hours.get(fsym, 8)), 4),
-                             prem=round(float((Decimal(p["markPrice"]) - Decimal(p["indexPrice"]))
-                                              / Decimal(p["indexPrice"]) * 100), 4))
-                if s and f and Decimal(s["askPrice"]) > 0 and Decimal(f["askPrice"]) > 0:
-                    fbid, fask = Decimal(f["bidPrice"]) / mult, Decimal(f["askPrice"]) / mult
-                    r.update(ngap=round(float((fbid - Decimal(s["askPrice"])) / Decimal(s["askPrice"]) * 100), 4),
-                             rgap=round(float((Decimal(s["bidPrice"]) - fask) / fask * 100), 4))
+                    r.update(fund=round(float(Decimal(p["lastFundingRate"]) * 100), 6), hours=hours.get(fsym, 8))
+                if s and f and Decimal(s["bidPrice"]) > 0 and Decimal(f["bidPrice"]) > 0:
+                    smid = (Decimal(s["bidPrice"]) + Decimal(s["askPrice"])) / 2
+                    fmid = (Decimal(f["bidPrice"]) + Decimal(f["askPrice"])) / 2 / mult
+                    r["bas"] = round(float((fmid - smid) / smid * 100), 4)
                 if sd:
-                    r.update(svol=round(float(sd["quoteVolume"])), schg=float(sd["priceChangePercent"]), strades=sd["count"])
+                    r.update(svol=round(float(sd["quoteVolume"])), schg=float(sd["priceChangePercent"]))
                 if fd:
-                    r.update(fvol=round(float(fd["quoteVolume"])), fchg=float(fd["priceChangePercent"]), ftrades=fd["count"])
+                    r.update(fvol=round(float(fd["quoteVolume"])), fchg=float(fd["priceChangePercent"]))
                 if sd and fd and float(sd["quoteVolume"]) > 0:
                     r["ratio"] = round(float(fd["quoteVolume"]) / float(sd["quoteVolume"]), 2)
                 if sd and sym in hour and float(sd["quoteVolume"]) > 0:
                     r["v1x"] = round(float(hour[sym]) * 24 / float(sd["quoteVolume"]), 1)
-                if back and sym in back[1] and "ngap" in r:
-                    r["bh"] = round((r["ngap"] - back[1][sym]) * 3600 / back[0], 4)
+                if back and sym in back[1] and "bas" in r:
+                    r["bh"] = round((r["bas"] - back[1][sym]) * 3600 / back[0], 4)
                 rows.append(r)
             with open("/var/lib/trader-board/board.tmp", "w") as out:
                 json.dump({"at": int(time.time() * 1000), "count": count, "rows": rows}, out)
             os.replace("/var/lib/trader-board/board.tmp", "/var/lib/trader-board/board.json")
             if mark:
-                anchors.append((time.time(), {r["sym"]: r["ngap"] for r in rows if "ngap" in r}))
+                anchors.append((time.time(), {r["sym"]: r["bas"] for r in rows if "bas" in r}))
                 anchors = [a for a in anchors if time.time() - a[0] <= 4200]
                 mark = False
-            lead_r = sorted([r for r in rows if "rgap" in r and r["pool"]], key=lambda r: r["rgap"], reverse=True)[:5]
-            lead_n = sorted([r for r in rows if "ngap" in r], key=lambda r: r["ngap"], reverse=True)[:5]
+            lead_r = sorted([r for r in rows if "bas" in r and r["pool"] and r["bas"] < 0], key=lambda r: r["bas"])[:5]
+            lead_n = sorted([r for r in rows if "bas" in r], key=lambda r: r["bas"], reverse=True)[:5]
             print(time.strftime("%H:%M:%S") + f" {count['total']} tokens ({count['both']} both, {count['spot']} spot-only, "
-                  f"{count['fut']} fut-only) | reverse pool>0 "
-                  + " ".join(f"{r['sym']} {r['rgap']:+.2f}%" for r in lead_r) + " | normal "
-                  + " ".join(f"{r['sym']} {r['ngap']:+.2f}%" for r in lead_n), flush=True)
-            time.sleep(2)
+                  f"{count['fut']} fut-only) | neg pool>0 "
+                  + " ".join(f"{r['sym']} {r['bas']:+.2f}%" for r in lead_r) + " | pos "
+                  + " ".join(f"{r['sym']} {r['bas']:+.2f}%" for r in lead_n), flush=True)
+            time.sleep(max(0.0, 1 - (time.time() - tick)))
     except KeyboardInterrupt:
         return
 

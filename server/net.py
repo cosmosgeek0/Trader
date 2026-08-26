@@ -168,11 +168,12 @@ def clock():
 
 
 def _news():
-    with open(os.path.join(news_state, "news.json")) as file:
-        data = json.load(file)
     with open(news_control) as file:
         if file.read(1) != "1":
-            raise RuntimeError("off")
+            return {"interval": False, "duration": 0, "p95": 0,
+                    "live": 0, "delayed": 0, "failed": 0, "note": "off"}
+    with open(os.path.join(news_state, "news.json")) as file:
+        data = json.load(file)
     age = round(time.time() - data["at"] / 1000)
     if age > 360:
         raise RuntimeError(f"stale {age}s")
@@ -257,6 +258,10 @@ if __name__ == "__main__":
     for old in ("tunnel", "news", "cloudflare", "dns"):
         data["series"].pop(old, None)
     while True:
+        with open("/var/lib/trader-net-control/enabled") as file:
+            if file.read(1) != "1":
+                time.sleep(EVERY)
+                continue
         now = int(time.time())
         current.clear()
         data["t"].append(now)

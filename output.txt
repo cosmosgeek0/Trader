@@ -1,3 +1,2 @@
-exit 0
-EARN out 278 ms
-EARN redeemed 5 USDT flexible, redeem 993266808, success True
+exit 1
+SPOT amend partially failed: {"code":-2021,"msg":"Order cancel-replace partially failed.","data":{"cancelResult":"SUCCESS","newOrderResult":"FAILURE","cancelResponse":{"symbol":"ETHUSDT","origClientOrderId":"hand1787921015403","orderId":49424830289,"orderListId":-1,"clientOrderId":"2BkHVFW3daH7E8w7zsEmew","transactTime":1787921033142,"price":"2256.30000000","origQty":"0.01100000","executedQty":"0.00000000","origQuoteOrderQty":"0.00000000","cummulativeQuoteQty":"0.00000000","status":"CANCELED","timeInForce":"GTC","type":"LIMIT_MAKER","side":"BUY","selfTradePreventionMode":"EXPIRE_MAKER"},"newOrderResponse":{"code":-2010,"msg":"Order would immediately match and take."}}}

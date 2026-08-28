@@ -18,6 +18,10 @@ elif action == "spot":
     binance.spot(sys.argv)
 elif action == "fut":
     binance.fut(sys.argv)
+elif action == "algo":
+    binance.algo(sys.argv)
+elif action == "amend":
+    binance.amend(sys.argv)
 elif action == "lev":
     binance.lev(sys.argv)
 elif action == "check":
@@ -32,6 +36,8 @@ elif action == "repay":
     binance.repay(sys.argv)
 elif action == "earn":
     binance.earn(sys.argv)
+elif action == "loan":
+    binance.loan(sys.argv)
 elif action == "quote":
     market.quote(sys.argv)
 elif action == "scan":

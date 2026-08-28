@@ -39,7 +39,13 @@ def post(url, action, params, method="POST"):
     try:
         result = send(url, params, method)
     except urllib.error.HTTPError as error:
-        raise SystemExit(action + " rejected: " + error.read().decode())
+        body = error.read().decode()
+        if error.code == 409:  # cancel-replace partial success: the cancel happened, the new order failed
+            raise SystemExit(action + " partially failed: " + body)
+        if error.code >= 500:  # Binance defines these as unknown: it may still have executed
+            raise SystemExit(f"{action} unclear (HTTP {error.code}): Binance may have executed it; "
+                             f"verify with the matching list or status command: " + body)
+        raise SystemExit(action + " rejected: " + body)
     print(f"{action} {int((time.time() - started) * 1000)} ms")
     return result
 
@@ -183,20 +189,42 @@ def orders():
 
 def spot(argv):
     side = argv[2]
+    if side == "oco":  # spot's OCO pair rides under the spot command
+        return oco(argv[1:])
     symbol = argv[3]
     if side == "cancel":
         result = post(SPOT + "/api/v3/order", "SPOT cancel",
                       {"symbol": symbol, "orderId": argv[4]}, "DELETE")
         print(f"SPOT canceled {symbol} order {result['orderId']}, status {result['status']}")
+    elif side == "cancelall":
+        results = post(SPOT + "/api/v3/openOrders", "SPOT cancel all", {"symbol": symbol}, "DELETE")
+        for r in results:
+            print(f"SPOT canceled {symbol} order {r['orderId']}, status {r['status']}")
+    elif side == "status":
+        o = get(SPOT + "/api/v3/order", {"symbol": symbol, "orderId": argv[4]})
+        print(f"SPOT {o['symbol']} {o['side']} {o['type']} id {o['orderId']} price {o['price']} "
+              f"qty {o['origQty']} filled {o['executedQty']} {o['status']}")
     else:
         amount = Decimal(argv[4])
         if len(argv) > 5:
             price = Decimal(argv[5])
-            filters = {f["filterType"]: f for f in json.load(urllib.request.urlopen(
-                SPOT + "/api/v3/exchangeInfo?symbol=" + symbol))["symbols"][0]["filters"]}
-            qty = round_step(amount / price, Decimal(filters["LOT_SIZE"]["stepSize"]))
+            filters = {f["filterType"]: f for f in spot_rules(symbol)["filters"]}
+            step = Decimal(filters["LOT_SIZE"]["stepSize"])
+            qty = round_step(amount / price, step)
             params = {"symbol": symbol, "side": side, "type": "LIMIT", "timeInForce": "GTC",
                       "quantity": str(qty), "price": str(price)}
+            if len(argv) > 6:
+                mode = argv[6]
+                if mode == "maker":
+                    del params["timeInForce"]
+                    params["type"] = "LIMIT_MAKER"
+                    params["newOrderRespType"] = "FULL"  # LIMIT_MAKER defaults to the slim ACK reply
+                elif mode in ("ioc", "fok"):
+                    params["timeInForce"] = mode.upper()
+                elif mode == "ice":
+                    params["icebergQty"] = str(round_step(Decimal(argv[7]) / price, step))
+                else:
+                    raise SystemExit("spot mode must be maker, ioc, fok, or ice USDT")
         else:
             params = {"symbol": symbol, "side": side, "type": "MARKET", "quoteOrderQty": str(amount)}
         order = place(SPOT + "/api/v3/order", "SPOT " + side, params)
@@ -211,6 +239,17 @@ def fut(argv):
         result = post(FAPI + "/fapi/v1/order", "FUT cancel",
                       {"symbol": symbol, "orderId": argv[4]}, "DELETE")
         print(f"FUT canceled {symbol} order {result['orderId']}, status {result['status']}")
+    elif side == "cancelall":
+        result = post(FAPI + "/fapi/v1/allOpenOrders", "FUT cancel all", {"symbol": symbol}, "DELETE")
+        print(f"FUT canceled all {symbol} open orders: {result['msg']}")
+    elif side == "status":
+        o = get(FAPI + "/fapi/v1/order", {"symbol": symbol, "orderId": argv[4]})
+        print(f"FUT {o['symbol']} {o['side']} {o['type']} id {o['orderId']} price {o['price']} "
+              f"qty {o['origQty']} filled {o['executedQty']} avg {o['avgPrice']} {o['status']}")
+    elif side == "margintype":
+        result = post(FAPI + "/fapi/v1/marginType", "FUT margin type",
+                      {"symbol": symbol, "marginType": argv[4].upper()})
+        print(f"FUT {symbol} margin type set {argv[4].upper()}: {result['msg']}")
     elif side == "close":
         position = position_amt(symbol)
         if position == 0:
@@ -348,6 +387,136 @@ def move(argv):
     result = post(SPOT + "/sapi/v1/asset/transfer", "move " + src + " to " + dst,
                   {"type": wallet[src] + "_" + wallet[dst], "asset": asset, "amount": qty})
     print(f"MOVED {qty} {asset} {src} -> {dst}, id {result['tranId']}")
+
+
+def loan(argv):
+    what = argv[2]
+    if what == "list":
+        for o in get(SPOT + "/sapi/v2/loan/flexible/ongoing/orders", {})["rows"]:
+            print(f"LOAN {o['totalDebt']} {o['loanCoin']} against {o['collateralAmount']} "
+                  f"{o['collateralCoin']}, LTV {o['currentLTV']}")
+        return
+    coin = argv[3]
+    qty = argv[4]
+    collateral = argv[5]
+    if what == "borrow":
+        r = post(SPOT + "/sapi/v2/loan/flexible/borrow", "LOAN borrow",
+                 {"loanCoin": coin, "loanAmount": qty,
+                  "collateralCoin": collateral, "collateralAmount": argv[6]})
+        print(f"LOAN borrowed {r['loanAmount']} {r['loanCoin']} against {r['collateralAmount']} "
+              f"{r['collateralCoin']}, status {r['status']}")
+    elif what == "repay":
+        params = {"loanCoin": coin, "collateralCoin": collateral}
+        if qty == "all":
+            debt = next(o["totalDebt"] for o in get(SPOT + "/sapi/v2/loan/flexible/ongoing/orders", {})["rows"]
+                        if o["loanCoin"] == coin and o["collateralCoin"] == collateral)
+            params.update(repayAmount=debt, fullRepayment="TRUE")
+        else:
+            params["repayAmount"] = qty
+        r = post(SPOT + "/sapi/v2/loan/flexible/repay", "LOAN repay", params)
+        print(f"LOAN repaid {coin}, remaining debt {r['remainingDebt']}, "
+              f"remaining collateral {r['remainingCollateral']} {collateral}, "
+              f"status {r['repayStatus']}")
+    else:
+        raise SystemExit("loan action must be list, borrow COIN QTY COLLATERAL CQTY, "
+                         "or repay COIN QTY|all COLLATERAL")
+
+
+def algo(argv):
+    what = argv[2]
+    if what == "list":
+        rows = get(FAPI + "/fapi/v1/openAlgoOrders", {})
+        print("ALGO open orders", len(rows))
+        for o in rows:
+            print(f"  {o['symbol']} {o['side']} {o['orderType']} algo {o['algoId']} "
+                  f"trigger {o['triggerPrice']} qty {o['quantity']} closePosition {o['closePosition']} "
+                  f"{o['algoStatus']}")
+    elif what == "cancel":
+        result = post(FAPI + "/fapi/v1/algoOrder", "ALGO cancel", {"algoId": argv[3]}, "DELETE")
+        print(f"ALGO canceled algo {result['algoId']}, {result['msg']}")
+    elif what in ("stop", "take"):
+        symbol = argv[3]
+        position = position_amt(symbol)
+        if position == 0:
+            raise SystemExit(f"ALGO {symbol} no position, side unknown")
+        result = post(FAPI + "/fapi/v1/algoOrder", "ALGO " + what,
+                      {"algoType": "CONDITIONAL", "symbol": symbol,
+                       "side": "SELL" if position > 0 else "BUY",
+                       "type": "STOP_MARKET" if what == "stop" else "TAKE_PROFIT_MARKET",
+                       "triggerPrice": argv[4], "closePosition": "true"})
+        print(f"ALGO {what} {symbol} {result['side']} {result['orderType']} algo {result['algoId']} "
+              f"trigger {result['triggerPrice']} closePosition {result['closePosition']} {result['algoStatus']}")
+    else:
+        raise SystemExit("algo action must be stop SYMBOL LEVEL, take SYMBOL LEVEL, "
+                         "list, or cancel ALGOID")
+
+
+def amend(argv):
+    where = argv[2]
+    symbol = argv[3]
+    order_id = argv[4]
+    price = argv[5]
+    if where == "spot":
+        old = get(SPOT + "/api/v3/order", {"symbol": symbol, "orderId": order_id})
+        params = {"symbol": symbol, "cancelOrderId": order_id,
+                  "cancelReplaceMode": "STOP_ON_FAILURE", "side": old["side"],
+                  "type": old["type"],
+                  "quantity": str(Decimal(old["origQty"]) - Decimal(old["executedQty"])),
+                  "price": price}
+        if old["type"] == "LIMIT_MAKER":
+            params["newOrderRespType"] = "FULL"  # LIMIT_MAKER defaults to the slim ACK reply
+        else:
+            params["timeInForce"] = old["timeInForce"]
+        if Decimal(old["icebergQty"]) != 0:
+            params["icebergQty"] = old["icebergQty"]
+        result = post(SPOT + "/api/v3/order/cancelReplace", "SPOT amend", params)
+        new = result["newOrderResponse"]
+        print(f"SPOT amended {symbol} {old['side']} {old['price']} -> {new['price']}, "
+              f"order {old['orderId']} -> {new['orderId']}, {new['status']}")
+    elif where == "fut":
+        old = get(FAPI + "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+        new = post(FAPI + "/fapi/v1/order", "FUT amend",
+                   {"symbol": symbol, "orderId": order_id, "side": old["side"],
+                    "quantity": old["origQty"], "price": price}, "PUT")
+        print(f"FUT amended {symbol} {old['side']} {old['price']} -> {new['price']}, "
+              f"order {new['orderId']}, {new['status']}")
+    else:
+        raise SystemExit("amend must be spot|fut SYMBOL ORDERID PRICE")
+
+
+def oco(argv):
+    what = argv[2]
+    if what == "list":
+        lists = get(SPOT + "/api/v3/openOrderList", {})
+        print("OCO open lists", len(lists))
+        for l in lists:
+            print(f"  {l['symbol']} list {l['orderListId']} {l['listOrderStatus']}")
+            for entry in l["orders"]:
+                o = get(SPOT + "/api/v3/order", {"symbol": l["symbol"], "orderId": entry["orderId"]})
+                print(f"    {o['side']} {o['type']} id {o['orderId']} price {o['price']} "
+                      f"stop {o.get('stopPrice', '-')} qty {o['origQty']} {o['status']}")
+    elif what == "cancel":
+        result = post(SPOT + "/api/v3/orderList", "OCO cancel",
+                      {"symbol": argv[3], "orderListId": argv[4]}, "DELETE")
+        print(f"OCO canceled {argv[3]} list {result['orderListId']}, status {result['listOrderStatus']}")
+        for r in result["orderReports"]:
+            print(f"  {r['side']} {r['type']} id {r['orderId']} {r['status']}")
+    elif what == "sell":
+        symbol = argv[3]
+        f = {x["filterType"]: x for x in spot_rules(symbol)["filters"]}
+        qty = round_step(Decimal(argv[4]), Decimal(f["LOT_SIZE"]["stepSize"]))
+        result = post(SPOT + "/api/v3/orderList/oco", "OCO sell",
+                      {"symbol": symbol, "side": "SELL", "quantity": str(qty),
+                       "aboveType": "LIMIT_MAKER", "abovePrice": argv[5],
+                       "belowType": "STOP_LOSS_LIMIT", "belowStopPrice": argv[6],
+                       "belowPrice": argv[7], "belowTimeInForce": "GTC"})
+        print(f"OCO sell {symbol} qty {qty} list {result['orderListId']} {result['listOrderStatus']}")
+        for r in result["orderReports"]:
+            print(f"  {r['side']} {r['type']} id {r['orderId']} price {r['price']} "
+                  f"stop {r.get('stopPrice', '-')} {r['status']}")
+    else:
+        raise SystemExit("oco action must be sell SYMBOL QTY TP_PRICE STOP_PRICE STOP_LIMIT_PRICE, "
+                         "list, or cancel SYMBOL ORDERLISTID")
 
 
 def earn(argv):

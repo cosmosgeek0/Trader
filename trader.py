@@ -3,6 +3,7 @@ import sys
 import account
 import basis
 import binance
+import long
 import market
 
 action = sys.argv[1]
@@ -41,6 +42,8 @@ elif action == "events":
     market.events(sys.argv)
 elif action == "volume":
     market.volume(sys.argv)
+elif action == "feed":
+    market.feed(sys.argv)
 elif action == "view":
     market.view(sys.argv)
 elif action == "auto":
@@ -49,5 +52,7 @@ elif action == "nbasis":
     basis.nbasis(sys.argv)
 elif action == "rbasis":
     basis.rbasis(sys.argv)
+elif action == "long":
+    long.long(sys.argv)
 else:
     raise SystemExit("unknown action: " + action)

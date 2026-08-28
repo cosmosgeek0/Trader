@@ -1,31 +1,12 @@
 exit 0
-AUTO watching ETHUSDT, 25 USDT per leg, entry gap -0.035%, close gap -0.044%
-07:10:44 executable normal gap -0.0437% (qty 0.010, spot 2377.51000000 fut 2376.47000000), entry at -0.035%
-07:10:46 executable normal gap +0.0097% (qty 0.010, spot 2377.29000000 fut 2377.52000000), entry at -0.035%
-entry threshold reached at +0.0097%
-set leverage 150 ms
-LEVERAGE 1x ETHUSDT
-NBASIS spot buy 147 ms
-NBASIS spot buy 0.010 ETHUSDT, order 49159767284 FILLED, executed 0.01000000
-NBASIS fut short 148 ms
-NBASIS fut short 0.010 ETHUSDT against 0.00999000 ETH received by the buy, order 8389766258215098172 FILLED, executed 0.010
-hedge submitted 151 ms after spot fill confirmed, open total 1773 ms
-07:10:49 executable normal gap -0.0374% (qty 0.010, spot 2379.28000000 fut 2378.39000000), close at -0.044%
-07:10:51 executable normal gap -0.0656% (qty 0.010, spot 2379.79000000 fut 2378.23000000), close at -0.044%
-close threshold reached at -0.0656%
-NBASIS fut close 150 ms
-NBASIS fut close 0.010 ETHUSDT, order 8389766258215161024 FILLED, executed 0.010
-NBASIS spot sell 150 ms
-NBASIS spot sell 0.010000 ETHUSDT, order 49159772001 FILLED, executed 0.01000000
-spot sell submitted 0 ms after fut close fill confirmed, close total 603 ms
-entry gap +0.0097%, exit gap -0.0656%
-fills: spot buy 0.01000000 for 23.78880000 USDT, fut short 0.010 at avg 2378.25000, fut close 0.010 at avg 2378.81000, spot sell 0.01000000 for 23.79710000 USDT
-fees 0.00001000 ETH, 0.04758240 USDT
-futures funding none charged or received
-net result: spot USDT -0.01549710, futures USDT -0.02938529, total -0.04488239 USDT, ETH change -0.00001000
-final balances: spot 0.00186750 ETH and 547.60806384 USDT, futures 42.32528711 USDT
-timings: watched 3 s, open 2086 ms, held 2 s, close 749 ms, total 9 s
-spot change ETH -0.00001000, USDT -0.01549710
-fut position 0.000
-margin ETH borrowed 0 interest 0
-open orders spot 0 fut 0 margin 0
+LONG ETHUSDT 25 USDT on spot, tp +5%, stop -5%, time exit after 0.003 h
+LONG spot buy 154 ms
+LONG spot buy ETHUSDT order 49420882643 FILLED, executed 0.01000000 for 24.96230000 USDT, entry avg 2496.23
+07:50:23 bid 2496.22000000 pnl -0.000%, tp +5% stop -5% time exit 07:50:33
+07:50:33 time exit at bid 2496.22000000, pnl -0.000%
+LONG spot sell 149 ms
+LONG spot sell 0.00990000 ETHUSDT order 49420883486 FILLED, executed 0.00990000 for 24.71257800 USDT, exit avg 2496.22
+fees 0.00001000 ETH, 0.02471258 USDT
+net result: time exit, spot USDT -0.27443458, ETH change +0.00009000
+final balances: spot 0.00018000 ETH, 546.28884854 USDT
+timings: open 511 ms, held 11 s, close 149 ms, total 11 s

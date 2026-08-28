@@ -344,10 +344,39 @@ def margin(argv):
 
 def move(argv):
     src, dst, asset, qty = argv[2], argv[3], argv[4], argv[5]
-    wallet = {"spot": "MAIN", "fut": "UMFUTURE", "margin": "MARGIN"}
+    wallet = {"spot": "MAIN", "fut": "UMFUTURE", "margin": "MARGIN", "funding": "FUNDING"}
     result = post(SPOT + "/sapi/v1/asset/transfer", "move " + src + " to " + dst,
                   {"type": wallet[src] + "_" + wallet[dst], "asset": asset, "amount": qty})
     print(f"MOVED {qty} {asset} {src} -> {dst}, id {result['tranId']}")
+
+
+def earn(argv):
+    what = argv[2]
+    if what == "list":
+        for p in get(SPOT + "/sapi/v1/simple-earn/flexible/position", {"size": 100}).get("rows", []):
+            print(f"EARN flexible {p['asset']} {p['totalAmount']}, product {p['productId']}, "
+                  f"apr {p.get('latestAnnualPercentageRate', '?')}, redeeming {p.get('redeemingAmount', '0')}")
+        return
+    asset = argv[3]
+    qty = argv[4]
+    rows = get(SPOT + "/sapi/v1/simple-earn/flexible/list", {"asset": asset, "size": 100})["rows"]
+    if not rows:
+        raise SystemExit("no flexible product for " + asset)
+    product = rows[0]["productId"]
+    if what == "add":
+        r = post(SPOT + "/sapi/v1/simple-earn/flexible/subscribe", "EARN add",
+                 {"productId": product, "amount": qty, "autoSubscribe": "false"})
+        print(f"EARN added {qty} {asset} flexible, purchase {r['purchaseId']}, success {r['success']}")
+    elif what == "out":
+        params = {"productId": product}
+        if qty == "all":
+            params["redeemAll"] = "true"
+        else:
+            params["amount"] = qty
+        r = post(SPOT + "/sapi/v1/simple-earn/flexible/redeem", "EARN out", params)
+        print(f"EARN redeemed {qty} {asset} flexible, redeem {r['redeemId']}, success {r['success']}")
+    else:
+        raise SystemExit("earn action must be list, add ASSET QTY, or out ASSET QTY|all")
 
 
 def repay(argv):

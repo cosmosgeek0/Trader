@@ -30,6 +30,8 @@ elif action == "borrow":
     binance.borrow_asset(sys.argv[2], sys.argv[3])
 elif action == "repay":
     binance.repay(sys.argv)
+elif action == "earn":
+    binance.earn(sys.argv)
 elif action == "quote":
     market.quote(sys.argv)
 elif action == "scan":

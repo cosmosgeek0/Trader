@@ -1,2 +1,3 @@
 exit 0
-machine started detached, pid 174899, log /var/lib/trader-board/machine-cycle.log; watch and control it on the Machine tab
+EARN out 278 ms
+EARN redeemed 5 USDT flexible, redeem 993266808, success True

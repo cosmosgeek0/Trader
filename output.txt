@@ -1,12 +1,3 @@
 exit 0
-LONG ETHUSDT 25 USDT on spot, tp +5%, stop -5%, time exit after 0.003 h
-LONG spot buy 149 ms
-LONG spot buy ETHUSDT order 49421123171 FILLED, executed 0.01000000 for 24.98570000 USDT, entry avg 2498.57
-08:12:19 bid 2498.56000000 pnl -0.000%, tp +5% stop -5% time exit 08:12:29
-08:12:29 time exit at bid 2498.56000000, pnl -0.000%
-LONG spot sell 148 ms
-LONG spot sell 0.00990000 ETHUSDT order 49421124148 FILLED, executed 0.00990000 for 24.73574400 USDT, exit avg 2498.56
-fees 0.00001000 ETH, 0.02473574 USDT
-net result: time exit, spot USDT -0.27469174, ETH change +0.00009000
-final balances: spot 0.00027000 ETH, 546.01415680 USDT
-timings: open 497 ms, held 11 s, close 148 ms, total 11 s
+FUT close 150 ms
+FUT closed 0.006 of LONG 0.006 ETHUSDT, position now 0.000

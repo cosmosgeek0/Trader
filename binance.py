@@ -218,10 +218,23 @@ def fut(argv):
         else:
             label = "LONG" if position > 0 else "SHORT"
             close_side = "SELL" if position > 0 else "BUY"
-            place(FAPI + "/fapi/v1/order", "FUT close",
-                  {"symbol": symbol, "side": close_side, "type": "MARKET",
-                   "quantity": str(abs(position)), "reduceOnly": "true"})
-            print(f"FUT closed {label} {abs(position)} {symbol}, position now {position_amt(symbol):f}")
+            qty = abs(position)
+            if len(argv) > 4:  # close only this many USDT of the position
+                ffilters = {x["filterType"]: x for x in next(
+                    s for s in json.load(urllib.request.urlopen(FAPI + "/fapi/v1/exchangeInfo"))["symbols"]
+                    if s["symbol"] == symbol)["filters"]}
+                step = Decimal(ffilters["MARKET_LOT_SIZE"]["stepSize"])
+                if step == 0:
+                    step = Decimal(ffilters["LOT_SIZE"]["stepSize"])
+                mark = Decimal(json.load(urllib.request.urlopen(
+                    FAPI + "/fapi/v1/ticker/price?symbol=" + symbol))["price"])
+                qty = min(qty, round_step(Decimal(argv[4]) / mark, step))
+            order = place(FAPI + "/fapi/v1/order", "FUT close",
+                          {"symbol": symbol, "side": close_side, "type": "MARKET",
+                           "quantity": str(qty), "reduceOnly": "true"})
+            order = wait_fill(FAPI + "/fapi/v1/order", "FUT close", order, symbol)
+            print(f"FUT closed {order['executedQty']} of {label} {abs(position)} {symbol}, "
+                  f"position now {position_amt(symbol):f}")
     else:
         amount = Decimal(argv[4])
         frules = next(

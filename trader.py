@@ -38,6 +38,22 @@ elif action == "earn":
     binance.earn(sys.argv)
 elif action == "loan":
     binance.loan(sys.argv)
+elif action == "flat":
+    binance.flat(sys.argv)
+elif action == "guard":
+    binance.guard(sys.argv)
+elif action == "income":
+    binance.income(sys.argv)
+elif action == "past":
+    binance.past(sys.argv)
+elif action == "fees":
+    binance.fees(sys.argv)
+elif action == "ramp":
+    binance.ramp(sys.argv)
+elif action == "fmode":
+    binance.fmode(sys.argv)
+elif action == "convert":
+    binance.convert(sys.argv)
 elif action == "quote":
     market.quote(sys.argv)
 elif action == "scan":

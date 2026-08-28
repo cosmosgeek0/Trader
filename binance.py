@@ -246,6 +246,10 @@ def fut(argv):
         o = get(FAPI + "/fapi/v1/order", {"symbol": symbol, "orderId": argv[4]})
         print(f"FUT {o['symbol']} {o['side']} {o['type']} id {o['orderId']} price {o['price']} "
               f"qty {o['origQty']} filled {o['executedQty']} avg {o['avgPrice']} {o['status']}")
+    elif side == "countdown":  # dead-man switch: cancels the symbol's orders unless refreshed
+        result = post(FAPI + "/fapi/v1/countdownCancelAll", "FUT countdown",
+                      {"symbol": symbol, "countdownTime": int(Decimal(argv[4]) * 1000)})
+        print(f"FUT countdown {symbol} set to {result['countdownTime']} ms (0 disables)")
     elif side == "margintype":
         result = post(FAPI + "/fapi/v1/marginType", "FUT margin type",
                       {"symbol": symbol, "marginType": argv[4].upper()})
@@ -517,6 +521,214 @@ def oco(argv):
     else:
         raise SystemExit("oco action must be sell SYMBOL QTY TP_PRICE STOP_PRICE STOP_LIMIT_PRICE, "
                          "list, or cancel SYMBOL ORDERLISTID")
+
+
+def flat(argv):
+    scope = {"symbol": argv[2]} if len(argv) > 2 else {}
+    spot_orders = get(SPOT + "/api/v3/openOrders", dict(scope))
+    fut_orders = get(FAPI + "/fapi/v1/openOrders", dict(scope))
+    margin_orders = get(SPOT + "/sapi/v1/margin/openOrders", dict(scope))
+    algo_orders = get(FAPI + "/fapi/v1/openAlgoOrders", dict(scope))
+    positions = [p for p in get(FAPI + "/fapi/v2/positionRisk", dict(scope))
+                 if Decimal(p["positionAmt"]) != 0]
+    print(f"FLAT {argv[2] if len(argv) > 2 else 'whole account'}: sweeping {len(spot_orders)} spot, "
+          f"{len(fut_orders)} fut, {len(margin_orders)} margin, {len(algo_orders)} algo orders "
+          f"and {len(positions)} positions "
+          f"({', '.join(sorted({p['symbol'] for p in positions})) or 'none'})", flush=True)
+    for symbol in sorted({o["symbol"] for o in spot_orders}):
+        for r in post(SPOT + "/api/v3/openOrders", "FLAT spot cancel all", {"symbol": symbol}, "DELETE"):
+            if "listOrderStatus" in r:  # an order list (OCO) swept as a unit
+                print(f"  spot canceled {symbol} list {r['orderListId']}, status {r['listOrderStatus']}")
+                for o in r["orderReports"]:
+                    print(f"    {o['side']} {o['type']} id {o['orderId']} {o['status']}")
+            else:
+                print(f"  spot canceled {symbol} order {r['orderId']}, status {r['status']}")
+    for symbol in sorted({o["symbol"] for o in fut_orders}):
+        result = post(FAPI + "/fapi/v1/allOpenOrders", "FLAT fut cancel all", {"symbol": symbol}, "DELETE")
+        print(f"  fut canceled all {symbol}: {result['msg']}")
+    for symbol in sorted({o["symbol"] for o in margin_orders}):
+        for r in post(SPOT + "/sapi/v1/margin/openOrders", "FLAT margin cancel all",
+                      {"symbol": symbol, "isIsolated": "FALSE"}, "DELETE"):
+            if "listOrderStatus" in r:  # an order list (OCO) swept as a unit
+                print(f"  margin canceled {symbol} list {r['orderListId']}, status {r['listOrderStatus']}")
+                for o in r["orderReports"]:
+                    print(f"    {o['side']} {o['type']} id {o['orderId']} {o['status']}")
+            else:
+                print(f"  margin canceled {symbol} order {r['orderId']}, status {r['status']}")
+    for o in algo_orders:
+        result = post(FAPI + "/fapi/v1/algoOrder", "FLAT algo cancel", {"algoId": o["algoId"]}, "DELETE")
+        print(f"  algo canceled {result['algoId']}, {result['msg']}")
+    for p in positions:
+        amt = Decimal(p["positionAmt"])
+        close = place(FAPI + "/fapi/v1/order", "FLAT fut close " + p["symbol"],
+                      {"symbol": p["symbol"], "side": "SELL" if amt > 0 else "BUY", "type": "MARKET",
+                       "quantity": str(abs(amt)), "reduceOnly": "true"})
+        close = wait_fill(FAPI + "/fapi/v1/order", "FLAT fut close " + p["symbol"], close, p["symbol"])
+        print(f"  closed {p['symbol']} {amt:+f}, executed {close['executedQty']} at avg {close['avgPrice']}")
+    left = [p for p in get(FAPI + "/fapi/v2/positionRisk", dict(scope)) if Decimal(p["positionAmt"]) != 0]
+    print(f"FLAT done: spot orders {len(get(SPOT + '/api/v3/openOrders', dict(scope)))}, "
+          f"fut orders {len(get(FAPI + '/fapi/v1/openOrders', dict(scope)))}, "
+          f"margin orders {len(get(SPOT + '/sapi/v1/margin/openOrders', dict(scope)))}, "
+          f"algo orders {len(get(FAPI + '/fapi/v1/openAlgoOrders', dict(scope)))}, positions {len(left)}")
+
+
+def convert(argv):
+    if argv[2] == "dust":
+        r = post(SPOT + "/sapi/v1/asset/dust", "CONVERT dust", {"asset": argv[3]})
+        for t in r["transferResult"]:
+            print(f"CONVERT dust {t['fromAsset']} {t['amount']} -> {t['transferedAmount']} BNB, "
+                  f"fee {t['serviceChargeAmount']}")
+        print(f"CONVERT dust total {r['totalTransfered']} BNB, fee {r['totalServiceCharge']}")
+        return
+    from_asset, to_asset, amount = argv[2], argv[3], argv[4]
+    quote = post(SPOT + "/sapi/v1/convert/getQuote", "CONVERT quote",
+                 {"fromAsset": from_asset, "toAsset": to_asset, "fromAmount": amount})
+    print(f"CONVERT quote {amount} {from_asset} -> {quote['toAmount']} {to_asset} "
+          f"at {quote['ratio']}, valid {quote['validTimestamp']}")
+    result = post(SPOT + "/sapi/v1/convert/acceptQuote", "CONVERT accept",
+                  {"quoteId": quote["quoteId"]})
+    deadline = time.time() + 10
+    while result["orderStatus"] == "PROCESS" and time.time() < deadline:
+        time.sleep(1)
+        result = get(SPOT + "/sapi/v1/convert/orderStatus", {"orderId": result["orderId"]})
+    if result["orderStatus"] != "SUCCESS":
+        raise SystemExit(f"CONVERT order {result['orderId']} ended {result['orderStatus']}; "
+                         f"verify with the Binance convert history")
+    print(f"CONVERT done, order {result['orderId']}: {result['fromAmount']} {from_asset} -> "
+          f"{result['toAmount']} {to_asset}")
+
+
+def fees(argv):
+    if argv[2] == "burn":
+        if argv[3] not in ("on", "off"):
+            raise SystemExit("fees burn takes exactly on or off")
+        r = post(SPOT + "/sapi/v1/bnbBurn", "FEES burn",
+                 {"spotBNBBurn": "true" if argv[3] == "on" else "false"})
+        print(f"FEES spot BNB burn {'on' if r['spotBNBBurn'] else 'off'}")
+        return
+    symbol = argv[2]
+    s = get(SPOT + "/sapi/v1/asset/tradeFee", {"symbol": symbol})[0]
+    f = get(FAPI + "/fapi/v1/commissionRate", {"symbol": symbol})
+    burn = get(SPOT + "/sapi/v1/bnbBurn", {})
+    print(f"FEES {symbol}: spot maker {s['makerCommission']} taker {s['takerCommission']}, "
+          f"fut maker {f['makerCommissionRate']} taker {f['takerCommissionRate']}, "
+          f"spot BNB burn {'on' if burn['spotBNBBurn'] else 'off'}")
+
+
+def ramp(argv):
+    what = argv[2]
+    if what == "address":
+        params = {"coin": argv[3]}
+        if len(argv) > 4:
+            params["network"] = argv[4]
+        r = get(SPOT + "/sapi/v1/capital/deposit/address", params)
+        print(f"RAMP deposit {r['coin']} on {params.get('network', 'default network')}: {r['address']}"
+              + (f" tag {r['tag']}" if r.get("tag") else ""))
+    elif what == "networks":
+        coin = next(c for c in get(SPOT + "/sapi/v1/capital/config/getall", {}) if c["coin"] == argv[3])
+        for n in coin["networkList"]:
+            print(f"RAMP {coin['coin']} {n['network']}: deposit {'on' if n['depositEnable'] else 'off'}, "
+                  f"withdraw {'on' if n['withdrawEnable'] else 'off'}, "
+                  f"fee {n['withdrawFee']}, min {n['withdrawMin']}")
+    elif what == "history":
+        for d in get(SPOT + "/sapi/v1/capital/deposit/hisrec", {}):
+            print(f"RAMP in  {d['amount']} {d['coin']} {d.get('network', '')} "
+                  f"{'done' if d['status'] == 1 else 'status ' + str(d['status'])} tx {d['txId']}")
+        for w in get(SPOT + "/sapi/v1/capital/withdraw/history", {}):
+            print(f"RAMP out {w['amount']} {w['coin']} {w.get('network', '')} "
+                  f"{'done' if w['status'] == 6 else 'status ' + str(w['status'])} tx {w.get('txId', '')}")
+    else:
+        raise SystemExit("ramp is address ASSET [NETWORK], networks ASSET, or history; "
+                         "no withdraw command exists by design")
+
+
+def fmode(argv):
+    if len(argv) > 2 and argv[2] == "multi":
+        if argv[3] not in ("on", "off"):
+            raise SystemExit("fmode multi takes exactly on or off")
+        r = post(FAPI + "/fapi/v1/multiAssetsMargin", "FMODE multi",
+                 {"multiAssetsMargin": "true" if argv[3] == "on" else "false"})
+        print(f"FMODE multi-asset margin: {r['msg']}")
+        return
+    if len(argv) > 2 and argv[2] == "brackets":
+        for b in get(FAPI + "/fapi/v1/leverageBracket", {"symbol": argv[3]})[0]["brackets"]:
+            print(f"FMODE bracket {b['bracket']}: up to {b['notionalCap']} USDT, "
+                  f"max leverage {b['initialLeverage']}x, maint {b['maintMarginRatio']}")
+        return
+    dual = get(FAPI + "/fapi/v1/positionSide/dual", {})
+    multi = get(FAPI + "/fapi/v1/multiAssetsMargin", {})
+    print(f"FMODE position mode {'hedge' if dual['dualSidePosition'] else 'one-way'}, "
+          f"multi-asset margin {'on' if multi['multiAssetsMargin'] else 'off'}")
+
+
+def guard(argv):
+    symbol = argv[2]
+    f = {x["filterType"]: x for x in spot_rules(symbol)["filters"]}
+    qty = round_step(Decimal(argv[3]), Decimal(f["LOT_SIZE"]["stepSize"]))
+    what = argv[4]
+    if what not in ("stop", "take"):
+        raise SystemExit("guard is stop|take: guard SYMBOL QTY stop|take STOPPRICE LIMITPRICE")
+    order = place(SPOT + "/api/v3/order", "GUARD " + what,
+                  {"symbol": symbol, "side": "SELL",
+                   "type": "STOP_LOSS_LIMIT" if what == "stop" else "TAKE_PROFIT_LIMIT",
+                   "timeInForce": "GTC", "quantity": str(qty), "stopPrice": argv[5],
+                   "price": argv[6], "newOrderRespType": "FULL"})  # conditional types default to ACK
+    print(f"GUARD {what} {symbol} qty {qty} order {order['orderId']} {order['status']}, "
+          f"trigger {argv[5]}, limit {argv[6]}")
+
+
+def income(argv):
+    words = argv[2:]
+    days = int(words.pop()) if words and words[-1].isdigit() else 7
+    params = {"startTime": int((time.time() - days * 86400) * 1000), "limit": 1000, "page": 1}
+    if words:
+        params["symbol"] = words[0]
+    kinds = {}
+    symbols = {}
+    nets = {}
+    while True:
+        rows = get(FAPI + "/fapi/v1/income", dict(params))
+        for r in rows:
+            amount = Decimal(r["income"])
+            asset = r["asset"]
+            kinds[(r["incomeType"], asset)] = kinds.get((r["incomeType"], asset), Decimal(0)) + amount
+            symbols[(r["symbol"] or "-", asset)] = symbols.get((r["symbol"] or "-", asset), Decimal(0)) + amount
+            nets[asset] = nets.get(asset, Decimal(0)) + amount
+        if len(rows) < 1000:
+            break
+        params["page"] += 1
+    print(f"INCOME {params.get('symbol', 'all symbols')} last {days} days")
+    for (kind, asset), total in sorted(kinds.items()):
+        print(f"  {kind} {total:+f} {asset}")
+    if "symbol" not in params:
+        for (sym, asset), total in sorted(symbols.items(), key=lambda x: x[1]):
+            print(f"  {sym} {total:+f} {asset}")
+    for asset, total in sorted(nets.items()):
+        print(f"  net {total:+f} {asset}")
+
+
+def past(argv):
+    symbol = argv[2]
+    n = int(argv[3]) if len(argv) > 3 else 10
+    rows = []
+    for venue, orders_url, trades_url in (
+            ("spot", SPOT + "/api/v3/allOrders", SPOT + "/api/v3/myTrades"),
+            ("fut", FAPI + "/fapi/v1/allOrders", FAPI + "/fapi/v1/userTrades")):
+        fills = {}
+        for t in get(trades_url, {"symbol": symbol, "limit": 1000}):
+            fills.setdefault(t["orderId"], []).append(t)
+        for o in get(orders_url, {"symbol": symbol, "limit": n * 3}):
+            if o["status"] in ("NEW", "PARTIALLY_FILLED"):
+                continue
+            executed = Decimal(o["executedQty"])
+            quote = Decimal(o.get("cummulativeQuoteQty") or o.get("cumQuote") or 0)
+            avg = quote / executed if executed else Decimal(0)
+            rows.append((o["updateTime"], venue, o, avg, fills.get(o["orderId"], [])))
+    for when, venue, o, avg, mine in sorted(rows, key=lambda r: r[0])[-n:]:
+        print(f"{time.strftime('%H:%M:%S', time.localtime(when / 1000))} {venue} {o['side']} "
+              f"{o['type']} qty {o['origQty']} avg {avg:f} {o['status']}")
+        for t in mine:
+            print(f"  fill {t['qty']} at {t['price']}, fee {t['commission']} {t['commissionAsset']}")
 
 
 def earn(argv):

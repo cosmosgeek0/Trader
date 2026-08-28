@@ -3,8 +3,8 @@ import sys
 import account
 import basis
 import binance
-import long
 import market
+import position
 
 action = sys.argv[1]
 
@@ -53,6 +53,8 @@ elif action == "nbasis":
 elif action == "rbasis":
     basis.rbasis(sys.argv)
 elif action == "long":
-    long.long(sys.argv)
+    position.long(sys.argv)
+elif action == "short":
+    position.short(sys.argv)
 else:
     raise SystemExit("unknown action: " + action)

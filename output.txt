@@ -1,3 +1,2 @@
 exit 0
-FUT close 150 ms
-FUT closed 0.006 of LONG 0.006 ETHUSDT, position now 0.000
+machine started detached, pid 174899, log /var/lib/trader-board/machine-cycle.log; watch and control it on the Machine tab

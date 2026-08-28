@@ -66,7 +66,25 @@ def rest(url, action, order, symbol, deadline):
     return order
 
 
-def spot_long(symbol, amount, tp, stop, hours, price, trail):
+def await_break(url, field, level, buying, deadline):
+    last = 0.0
+    while True:
+        touch = Decimal(public(url)[field])
+        if time.time() >= deadline:  # window over before this quote; nothing may open on it
+            print(f"{time.strftime('%H:%M:%S')} break {level:f} not reached inside the window, "
+                  f"now {touch:f}, nothing done", flush=True)
+            return None
+        if touch >= level if buying else touch <= level:
+            print(f"{time.strftime('%H:%M:%S')} break {level:f} crossed at {touch:f}", flush=True)
+            return touch
+        if time.time() - last >= 30:
+            print(f"{time.strftime('%H:%M:%S')} waiting for break {level:f}, "
+                  f"{field[:3]} {touch:f}", flush=True)
+            last = time.time()
+        time.sleep(min(2.0, max(0.0, deadline - time.time())))
+
+
+def spot_long(symbol, amount, tps, stop, hours, mode, level, trail):
     t0 = time.time()
     deadline = t0 + float(hours) * 3600
     srules = spot_rules(symbol)
@@ -77,39 +95,57 @@ def spot_long(symbol, amount, tp, stop, hours, price, trail):
     if sell_step == 0:
         sell_step = sstep
     before = spot_free()
-    if price is None:
-        buy = place(SPOT + "/api/v3/order", "LONG spot buy",
-                    {"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": str(amount)})
-        buy = wait_fill(SPOT + "/api/v3/order", "LONG spot buy", buy, symbol)
-    else:
-        qty = round_step(amount / price, sstep)
+    if mode == "limit":
+        qty = round_step(amount / level, sstep)
         buy = place(SPOT + "/api/v3/order", "LONG spot buy",
                     {"symbol": symbol, "side": "BUY", "type": "LIMIT", "timeInForce": "GTC",
-                     "quantity": str(qty), "price": str(price)})
+                     "quantity": str(qty), "price": str(level)})
         buy = rest(SPOT + "/api/v3/order", "LONG spot buy", buy, symbol, deadline)
         if buy is None:
             return
+    else:
+        if mode == "break":
+            if await_break(SPOT + "/api/v3/ticker/bookTicker?symbol=" + symbol,
+                           "askPrice", level, True, deadline) is None:
+                return
+        buy = place(SPOT + "/api/v3/order", "LONG spot buy",
+                    {"symbol": symbol, "side": "BUY", "type": "MARKET", "quoteOrderQty": str(amount)})
+        buy = wait_fill(SPOT + "/api/v3/order", "LONG spot buy", buy, symbol)
     opened = time.time()
     entry = Decimal(buy["cummulativeQuoteQty"]) / Decimal(buy["executedQty"])
     owned = spot_free().get(base, Decimal(0)) - before.get(base, Decimal(0))
     print(f"LONG spot buy {symbol} order {buy['orderId']} {buy['status']}, executed {buy['executedQty']} "
           f"for {buy['cummulativeQuoteQty']} USDT, entry avg {entry:f}", flush=True)
-    if buy["status"] == "FILLED":
-        reason = watch(SPOT + "/api/v3/ticker/bookTicker", symbol, "bidPrice", entry, 1,
-                       tp, stop, trail, deadline)
-    else:
-        reason = "entry window"
-    held = time.time()
-    sell_qty = round_step(owned, sell_step)
-    sell = place(SPOT + "/api/v3/order", "LONG spot sell",
-                 {"symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(sell_qty)})
-    sell = wait_fill(SPOT + "/api/v3/order", "LONG spot sell", sell, symbol)
+    remaining = owned
+    exits = []
+    held = opened
+    for i, tp in enumerate(tps):
+        if buy["status"] == "FILLED":
+            reason = watch(SPOT + "/api/v3/ticker/bookTicker", symbol, "bidPrice", entry, 1,
+                           tp, stop, trail, deadline)
+        else:
+            reason = "entry window"
+        if held == opened:
+            held = time.time()
+        part = round_step(remaining, sell_step)
+        if reason == "take-profit" and i < len(tps) - 1:
+            half = round_step(remaining / 2, sell_step)
+            if half > 0:
+                part = half
+        sell = place(SPOT + "/api/v3/order", "LONG spot sell",
+                     {"symbol": symbol, "side": "SELL", "type": "MARKET", "quantity": str(part)})
+        sell = wait_fill(SPOT + "/api/v3/order", "LONG spot sell", sell, symbol)
+        exits.append(sell)
+        remaining -= Decimal(sell["executedQty"])
+        print(f"LONG spot sell {sell['executedQty']} {symbol} order {sell['orderId']} {sell['status']} "
+              f"for {sell['cummulativeQuoteQty']} USDT, avg "
+              f"{Decimal(sell['cummulativeQuoteQty']) / Decimal(sell['executedQty']):f}, "
+              f"remaining {remaining:f}")
+        if reason != "take-profit" or round_step(remaining, sell_step) == 0:
+            break
     closed = time.time()
-    exit_avg = Decimal(sell["cummulativeQuoteQty"]) / Decimal(sell["executedQty"])
-    print(f"LONG spot sell {sell_qty} {symbol} order {sell['orderId']} {sell['status']}, "
-          f"executed {sell['executedQty']} for {sell['cummulativeQuoteQty']} USDT, exit avg {exit_avg:f}")
     fee = {}
-    for order in (buy, sell):
+    for order in [buy] + exits:
         for t in get(SPOT + "/api/v3/myTrades", {"symbol": symbol, "orderId": order["orderId"]}):
             fee[t["commissionAsset"]] = fee.get(t["commissionAsset"], Decimal(0)) + Decimal(t["commission"])
     print("fees " + ", ".join(f"{v:f} {k}" for k, v in fee.items()))
@@ -117,11 +153,11 @@ def spot_long(symbol, amount, tp, stop, hours, price, trail):
     print(f"net result: {reason} exit, spot USDT {after.get('USDT', Decimal(0)) - before.get('USDT', Decimal(0)):+f}, "
           f"{base} change {after.get(base, Decimal(0)) - before.get(base, Decimal(0)):+f}")
     print(f"final balances: spot {after.get(base, Decimal(0)):f} {base}, {after.get('USDT', Decimal(0)):f} USDT")
-    print(f"timings: open {int((opened - t0) * 1000)} ms, held {int(held - opened)} s, "
-          f"close {int((closed - held) * 1000)} ms, total {int(closed - t0)} s")
+    print(f"timings: open {int((opened - t0) * 1000)} ms, first exit {int(held - opened)} s after open, "
+          f"done {int(closed - t0)} s from start")
 
 
-def fut_trade(symbol, amount, tp, stop, hours, side, price, trail):
+def fut_trade(symbol, amount, tps, stop, hours, side, mode, level, trail):
     word = "LONG" if side == "BUY" else "SHORT"
     open_action = word + (" fut buy" if side == "BUY" else " fut sell")
     t0 = time.time()
@@ -137,43 +173,66 @@ def fut_trade(symbol, amount, tp, stop, hours, side, price, trail):
     lev = post(FAPI + "/fapi/v1/leverage", "set leverage", {"symbol": symbol, "leverage": "1"})
     print(f"LEVERAGE {lev['leverage']}x {symbol}")
     book = FAPI + "/fapi/v1/ticker/bookTicker"
-    opened_ms = int(time.time() * 1000)
-    if price is None:
-        touch = Decimal(public(book + "?symbol=" + symbol)["askPrice" if side == "BUY" else "bidPrice"])
-        qty = round_step(amount / touch, fstep)
-        order = place(FAPI + "/fapi/v1/order", open_action,
-                      {"symbol": symbol, "side": side, "type": "MARKET", "quantity": str(qty)})
-        order = wait_fill(FAPI + "/fapi/v1/order", open_action, order, symbol)
-    else:
-        qty = round_step(amount / price, Decimal(ffilters["LOT_SIZE"]["stepSize"]))
+    touch_field = "askPrice" if side == "BUY" else "bidPrice"
+    if mode == "limit":
+        qty = round_step(amount / level, Decimal(ffilters["LOT_SIZE"]["stepSize"]))
+        opened_ms = int(time.time() * 1000)
         order = place(FAPI + "/fapi/v1/order", open_action,
                       {"symbol": symbol, "side": side, "type": "LIMIT", "timeInForce": "GTC",
-                       "quantity": str(qty), "price": str(price)})
+                       "quantity": str(qty), "price": str(level)})
         order = rest(FAPI + "/fapi/v1/order", open_action, order, symbol, deadline)
         if order is None:
             return
+    else:
+        if mode == "break":
+            touch = await_break(book + "?symbol=" + symbol, touch_field, level, side == "BUY", deadline)
+            if touch is None:
+                return
+        else:
+            touch = Decimal(public(book + "?symbol=" + symbol)[touch_field])
+        qty = round_step(amount / touch, fstep)
+        opened_ms = int(time.time() * 1000)
+        order = place(FAPI + "/fapi/v1/order", open_action,
+                      {"symbol": symbol, "side": side, "type": "MARKET", "quantity": str(qty)})
+        order = wait_fill(FAPI + "/fapi/v1/order", open_action, order, symbol)
     opened = time.time()
     entry = Decimal(order["avgPrice"])
     print(f"{open_action} {order['executedQty']} {symbol} order {order['orderId']} {order['status']} "
           f"at avg {entry:f}", flush=True)
-    if order["status"] == "FILLED":
-        reason = watch(book, symbol, "bidPrice" if side == "BUY" else "askPrice", entry,
-                       1 if side == "BUY" else -1, tp, stop, trail, deadline)
-    else:
-        reason = "entry window"
-    held = time.time()
-    close_qty = Decimal(order["executedQty"])
-    close = place(FAPI + "/fapi/v1/order", word + " fut close",
-                  {"symbol": symbol, "side": "SELL" if side == "BUY" else "BUY", "type": "MARKET",
-                   "quantity": str(close_qty), "reduceOnly": "true"})
-    close = wait_fill(FAPI + "/fapi/v1/order", word + " fut close", close, symbol)
+    watch_field = "bidPrice" if side == "BUY" else "askPrice"
+    close_side = "SELL" if side == "BUY" else "BUY"
+    remaining = Decimal(order["executedQty"])
+    exits = []
+    held = opened
+    for i, tp in enumerate(tps):
+        if order["status"] == "FILLED":
+            reason = watch(book, symbol, watch_field, entry, 1 if side == "BUY" else -1,
+                           tp, stop, trail, deadline)
+        else:
+            reason = "entry window"
+        if held == opened:
+            held = time.time()
+        part = remaining
+        if reason == "take-profit" and i < len(tps) - 1:
+            half = round_step(remaining / 2, fstep)
+            if half > 0:
+                part = half
+        close = place(FAPI + "/fapi/v1/order", word + " fut close",
+                      {"symbol": symbol, "side": close_side, "type": "MARKET",
+                       "quantity": str(part), "reduceOnly": "true"})
+        close = wait_fill(FAPI + "/fapi/v1/order", word + " fut close", close, symbol)
+        exits.append(close)
+        remaining -= Decimal(close["executedQty"])
+        print(f"{word} fut close {close['executedQty']} {symbol} order {close['orderId']} {close['status']} "
+              f"at avg {close['avgPrice']}, remaining {remaining:f}")
+        if reason != "take-profit" or remaining == 0:
+            break
     closed = time.time()
-    print(f"{word} fut close {close_qty} {symbol} order {close['orderId']} {close['status']}, "
-          f"executed {close['executedQty']} at avg {close['avgPrice']}")
+    ids = {order["orderId"]} | {c["orderId"] for c in exits}
     fee = Decimal(0)
     pnl = Decimal(0)
     for t in get(FAPI + "/fapi/v1/userTrades", {"symbol": symbol, "startTime": opened_ms}):
-        if t["orderId"] in (order["orderId"], close["orderId"]):
+        if t["orderId"] in ids:
             fee += Decimal(t["commission"])
             pnl += Decimal(t["realizedPnl"])
     funding = sum(Decimal(i["income"]) for i in get(FAPI + "/fapi/v1/income",
@@ -183,41 +242,60 @@ def fut_trade(symbol, amount, tp, stop, hours, side, price, trail):
           + (f"funding {funding:+f} USDT" if funding else "funding none charged or received"))
     print(f"net result: {reason} exit, futures USDT {fut1 - fut0:+f}")
     print(f"final: futures {fut1:f} USDT, position {position_amt(symbol):f}")
-    print(f"timings: open {int((opened - t0) * 1000)} ms, held {int(held - opened)} s, "
-          f"close {int((closed - held) * 1000)} ms, total {int(closed - t0)} s")
+    print(f"timings: open {int((opened - t0) * 1000)} ms, first exit {int(held - opened)} s after open, "
+          f"done {int(closed - t0)} s from start")
+
+
+def entry_args(argv, at):
+    mode = argv[at] if len(argv) > at else "market"
+    if mode not in ("market", "limit", "break"):
+        raise SystemExit("entry must be market, limit PRICE, or break LEVEL")
+    level = None
+    if mode != "market":
+        if len(argv) <= at + 1:
+            raise SystemExit(mode + " entry needs a price")
+        level = Decimal(argv[at + 1])
+        at += 1
+    trail = Decimal(argv[at + 1]) if len(argv) > at + 1 else None
+    return mode, level, trail
+
+
+def tp_args(word):
+    tps = [Decimal(x) for x in word.split("/")]
+    if len(tps) > 2:
+        raise SystemExit("tp is one target, or A/B for half out at +A% and the rest at +B%")
+    return tps
 
 
 def long(argv):
     symbol = argv[2]
     amount = Decimal(argv[3])
-    tp = Decimal(argv[4])
+    tps = tp_args(argv[4])
     stop = Decimal(argv[5])
     hours = Decimal(argv[6])
     venue = argv[7] if len(argv) > 7 else "spot"
     if venue not in ("spot", "fut"):
         raise SystemExit("venue must be spot or fut")
-    price = Decimal(argv[8]) if len(argv) > 8 and argv[8] != "market" else None
-    trail = Decimal(argv[9]) if len(argv) > 9 else None
-    entry_word = f"limit {price:f}" if price is not None else "market"
+    mode, level, trail = entry_args(argv, 8)
+    entry_word = "market" if mode == "market" else f"{mode} {level:f}"
     trail_word = f", trail {trail}%" if trail is not None else ""
-    print(f"LONG {symbol} {amount} USDT on {venue} at {entry_word}, tp +{tp}%, stop -{stop}%{trail_word}, "
+    print(f"LONG {symbol} {amount} USDT on {venue} at {entry_word}, tp +{argv[4]}%, stop -{stop}%{trail_word}, "
           f"all inside {hours} h", flush=True)
     if venue == "fut":
-        fut_trade(symbol, amount, tp, stop, hours, "BUY", price, trail)
+        fut_trade(symbol, amount, tps, stop, hours, "BUY", mode, level, trail)
     else:
-        spot_long(symbol, amount, tp, stop, hours, price, trail)
+        spot_long(symbol, amount, tps, stop, hours, mode, level, trail)
 
 
 def short(argv):
     symbol = argv[2]
     amount = Decimal(argv[3])
-    tp = Decimal(argv[4])
+    tps = tp_args(argv[4])
     stop = Decimal(argv[5])
     hours = Decimal(argv[6])
-    price = Decimal(argv[7]) if len(argv) > 7 and argv[7] != "market" else None
-    trail = Decimal(argv[8]) if len(argv) > 8 else None
-    entry_word = f"limit {price:f}" if price is not None else "market"
+    mode, level, trail = entry_args(argv, 7)
+    entry_word = "market" if mode == "market" else f"{mode} {level:f}"
     trail_word = f", trail {trail}%" if trail is not None else ""
-    print(f"SHORT {symbol} {amount} USDT on fut at {entry_word}, tp +{tp}%, stop -{stop}%{trail_word}, "
+    print(f"SHORT {symbol} {amount} USDT on fut at {entry_word}, tp +{argv[4]}%, stop -{stop}%{trail_word}, "
           f"all inside {hours} h", flush=True)
-    fut_trade(symbol, amount, tp, stop, hours, "SELL", price, trail)
+    fut_trade(symbol, amount, tps, stop, hours, "SELL", mode, level, trail)

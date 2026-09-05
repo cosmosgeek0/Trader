@@ -49,6 +49,7 @@ burn = 0.75 if get(SPOT + "/sapi/v1/bnbBurn", {})["spotBNBBurn"] else 1.0
 fut_fee = float(get(FAPI + "/fapi/v1/commissionRate", {"symbol": "BTCUSDT"})["takerCommissionRate"]) * (0.9 if get(FAPI + "/fapi/v1/feeBurn", {})["feeBurn"] else 1.0)
 spot_fee = float(get(SPOT + "/sapi/v1/asset/tradeFee", {"symbol": "BTCUSDT"})[0]["takerCommission"]) * burn
 cost = 2 * spot_fee + 2 * fut_fee
+rates = {x["symbol"]: float(x["lastFundingRate"]) for x in public(FAPI + "/fapi/v1/premiumIndex")}  # positive: the short is paid
 pairs = {}
 for sym, s in spot_info.items():
     f = fut_info.get(sym)
@@ -60,7 +61,7 @@ for sym, s in spot_info.items():
     least = max(float(sf["NOTIONAL"]["minNotional"]), float(ff["MIN_NOTIONAL"]["notional"]))
     if least <= float(leg):
         pairs[sym] = {"step": step, "sb": 0.0, "sa": 0.0, "sB": 0.0, "sA": 0.0, "fb": 0.0, "fa": 0.0, "fB": 0.0, "fA": 0.0,
-                      "sa_s": "", "fb_s": "", "su": 0, "fu": 0, "E": 0, "T": 0, "armed": None, "timer": None}
+                      "sa_s": "", "fb_s": "", "su": 0, "fu": 0, "E": 0, "T": 0, "armed": None, "timer": None, "rate": rates.get(sym, 0.0)}
 state = {"busy": False, "shots": 0, "held": {}, "net": 0.0, "funding": 0.0, "fees": 0.0, "done": False}
 lanes = {"spot": "wss://ws-api.binance.com:443/ws-api/v3?timeUnit=MICROSECOND", "fut": "wss://ws-fapi.binance.com/ws-fapi/v1"}
 feeds = {"spot": "wss://stream.binance.com:9443/ws", "fut": "wss://fstream.binance.com/public/ws"}
@@ -184,7 +185,7 @@ async def shot(sym):
     k = state["shots"]
     log(f"SHOT {k} {sym}: perp bid {seen_fb} over spot ask {seen_sa} by {(float(seen_fb) / float(seen_sa) - 1) * 100:+.4f}%, "
         f"cost {cost * 100:.4f}%, touch spot {p['sA'] * p['sa']:.0f} perp {p['fB'] * p['fb']:.0f} USDT, perp frame E {seen_E} T {seen_T}, "
-        f"host clock {seen_at // 1000000} ({seen_at // 1000000 - seen_E} ms after E), qty {qty}")
+        f"host clock {seen_at // 1000000} ({seen_at // 1000000 - seen_E} ms after E), qty {qty}, funding rate {p['rate'] * 100:+.4f}%")
     t_send = clock()
     spot_task = asyncio.ensure_future(order("spot", sym, "BUY", qty, seen_sa))
     fut_task = asyncio.ensure_future(order("fut", sym, "SELL", qty, seen_fb))
@@ -303,8 +304,8 @@ def on_book(venue, d):
             return
     if not (p["sa"] and p["fb"]) or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted:
         return
-    if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor:
-        if p["armed"] is None:
+    if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor and (rule != "fund" or p["rate"] > 0):
+        if p["armed"] is None:  # the fund rule only holds a short that is paid at the settlement
             p["armed"] = now()
             p["timer"] = asyncio.get_running_loop().call_later(confirm, standing, d["s"])
     elif p["armed"] is not None:

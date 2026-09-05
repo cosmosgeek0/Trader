@@ -25,15 +25,15 @@ The owner gives the only current capability, money amount, and execution path in
 - Repository: `https://github.com/cosmosgeek0/Trader`. Local root: `/Users/cosmosgeek/Desktop/Trader`. Start and work only inside it.
 - `ui/` is public frontend only; `server/` is the UI backend. Ordinary frontend work changes only `ui/`; review or deploy `server/` and the service files only when the task changes backend behavior. Money code never lives in either.
 - `ACCESS.md`, `server/access.py`, `ui/devices.js`, and `ui.service` are the login, Devices, and access boundary. For news, network, styling, layout, and other ordinary UI work, do not read, search, review, edit, deploy, or include them in critic packets. Read these files only when the current task changes login, Devices, access, or `ui.service` runtime settings; then `ACCESS.md` governs that work.
-- Live code runs on AWS EC2 `i-007520206c48bb9b6` in `ap-northeast-1` (Tokyo, fixed IP 52.69.126.168) through AWS SSM.
-- Reach the host with `ssh cosmos 'COMMAND'`; copy files with `scp LOCAL_FILE cosmos:REMOTE_PATH`. Both are already configured on this Mac.
+- Live code runs on AWS EC2 `i-0b3f6321572cb5f88` in `ap-northeast-1`, zone id apne1-az4, the zone of Binance's gateways (fixed IP 52.194.194.36, c7i.large) through AWS SSM. The old host `i-007520206c48bb9b6` (52.69.126.168) was stopped on 2026-09-05 23:09 UTC; its disk and IP are kept until 2026-09-12.
+- Reach the host with `ssh az4 'COMMAND'`; copy files with `scp LOCAL_FILE az4:REMOTE_PATH`. Both are already configured on this Mac. `ssh cosmos` names the stopped old host.
 - The live Binance account is reached only from that host.
 - Binance credentials already exist in AWS Secrets Manager. Never search for, copy, print, log, or store them.
 - Use `https://arbitrage.cosmosgeek.org/` only when the current task requires it. Use the owner's connected Chrome session; do not open another login.
 - Deploy only the finished Python files required by the current capability to `/home/ssm-user/Trader/` with `scp`.
 - For a financial action, write the exact AWS command once in local `run.txt` as `cd /home/ssm-user/Trader && python3` followed by the deployed filename and arguments. `run.txt` is only the owner's handoff.
 - Do not run, read, rewrite, copy, or deploy `run.txt`. The owner will run it within ten seconds; do not stop or ask the owner. Wait ten seconds, read `output.txt` once, verify Binance once, then continue. The first line of `output.txt` is the runner's exit status, not program output. A long-running command truncates `output.txt` at start and writes it once at the end; wait for that write.
-- Read-only commands may be run directly with `ssh cosmos`. Every command that moves money, places an order, or cancels one runs only through `run.txt`.
+- Read-only commands may be run directly with `ssh az4`. Every command that moves money, places an order, or cancels one runs only through `run.txt`. The runner executes `run.txt` on az4; a first line `@HOST` names another ssh host.
 - Unrelated balances, Earn balances, and dust are not Trader working capital. Do not move, trade, borrow against, repay with, or sweep them unless the owner explicitly names them.
 - Only one worker edits the repository at a time. A new worker starts from this file, the complete code required by the current chat, and the last live output; no handover documents.
 - Cloudflare, UI, old repositories, parent folders, Desktop files other Desktop files outside this repository, memories, state files, handovers, evidence, Git history, and old instructions are not Trader context unless the owner names an exact item.

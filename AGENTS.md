@@ -1,19 +1,31 @@
 # Trader
 
+## Attack every claim
+
+Every claim by a Fable, Codex, or any other model about a limit, a floor, a ceiling, "the fastest", "the best", or "cannot be done" is presumed wrong until it is measured on this host or read in full from a dated source. That covers its own claims, the critic's, and the previous chat's. Before stating any number, label it measured, published, or guessed, and say what it was measured against. When the owner disputes a limit, do not defend it: run parallel research agents, read the sources, measure again, and report what was found, including exactly where the earlier claim was wrong. Keep attacking each claim until no faster or better form is left to find, then build that one. A wrong limit stated with confidence is the worst defect in this project: it ends the search and the owner nearly builds on it. On Sep 5 2026 the builder said the Tokyo zone did not matter and 3 ms was the floor; one live monitor showed Binance's gateways answer in 0.27 ms from apne1-az4 against 2.35 ms from the host's zone.
+
+## Do the narrow thing
+
+The owner's last instruction is the whole task. Do exactly that and stop. A good result is not permission for the next step: not the next capability, not execution, not a run.txt, not a live command, not a proposal to spend money. When the owner says "just look" or "simulate", nothing that can place an order is written or offered. Every mistake of this kind is recorded here with its date so the next worker does not repeat it.
+
+Mistakes on record:
+- 2026-09-05: the builder stated 3 ms as the floor of a Binance order loop without measuring; the true number from apne1-az4 was under 1 ms.
+- 2026-09-05: asked to see and categorize opportunities only, the builder built a firing trigger into the order program and handed the owner a live command. Twice in one day: first a NOM watch proposal, then the confirm-then-fire trigger.
+
 Trader is one personal Binance trading program. Three came before it and died the same death: agents invented gates, ceremonies, and bloat, other agents obeyed them, and the projects buried themselves. This file is what keeps the fourth one alive.
 
 The work is rewarded for exactly three things. A simple, clear, lightning-fast implementation with nothing standing in the middle. Live money proof — your own dry read, then the real run, nothing between. The owner's word followed without your own biases added. Code written once that works beats code edited twenty times; every shortcut is paid for by the next worker.
 
 Build it vertically, one complete working capability at a time. Normal basis, reverse basis, and volume are long-term directions, not permission to build ahead.
 
-The owner gives the only current capability, money amount, and execution path in chat. Unless the owner says otherwise there, live proofs use ETHUSDT with 25 USDT per leg at market, and market analysis uses 500 USDT. Do not ask the owner for what this file already answers.
+The owner gives the only current capability, money amount, and execution path in chat. Unless the owner says otherwise there, live proofs use ETHUSDT at market, and market analysis uses 500 USDT. Do not ask the owner for what this file already answers.
 
 ## Project
 
 - Repository: `https://github.com/cosmosgeek0/Trader`. Local root: `/Users/cosmosgeek/Desktop/Trader`. Start and work only inside it.
 - `ui/` is public frontend only; `server/` is the UI backend. Ordinary frontend work changes only `ui/`; review or deploy `server/` and the service files only when the task changes backend behavior. Money code never lives in either.
 - `ACCESS.md`, `server/access.py`, `ui/devices.js`, and `ui.service` are the login, Devices, and access boundary. For news, network, styling, layout, and other ordinary UI work, do not read, search, review, edit, deploy, or include them in critic packets. Read these files only when the current task changes login, Devices, access, or `ui.service` runtime settings; then `ACCESS.md` governs that work.
-- Live code runs on AWS EC2 `i-0e87fe0e7ba2063a9` in `ap-south-1` through AWS SSM.
+- Live code runs on AWS EC2 `i-007520206c48bb9b6` in `ap-northeast-1` (Tokyo, fixed IP 52.69.126.168) through AWS SSM.
 - Reach the host with `ssh cosmos 'COMMAND'`; copy files with `scp LOCAL_FILE cosmos:REMOTE_PATH`. Both are already configured on this Mac.
 - The live Binance account is reached only from that host.
 - Binance credentials already exist in AWS Secrets Manager. Never search for, copy, print, log, or store them.

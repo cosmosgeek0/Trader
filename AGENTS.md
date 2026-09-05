@@ -81,8 +81,8 @@ The owner gives the only current capability, money amount, and execution path in
 
 ## Review
 
-- After each capability passes live, run one independent Sol 5.6 Max critic.
-- Run the critic locally: `codex exec -m gpt-5.6-sol -c 'service_tier="priority"' -s read-only --skip-git-repo-check` with the complete packet on stdin. Never use a Claude sub-agent as the critic. Trust the verdict only after the printed session header confirms model gpt-5.6-sol with max reasoning.
+- After each capability passes live, and before any claim reaches the owner, run one independent Astra GPT-6 critic at max or ultra reasoning.
+- Run the critic locally: `codex exec -m gpt-6-astra -c 'model_reasoning_effort="ultra"' -c 'service_tier="priority"' -s read-only --skip-git-repo-check` with the complete packet on stdin (`max` is the other allowed effort). Never use a Claude sub-agent as the critic. Trust the verdict only after the printed session header confirms model gpt-6-astra with max or ultra reasoning. Verified 2026-09-06: the names gpt-6, gpt-6-astra-max and gpt-6-astra-ultracore are refused by codex.
 - The critic reads `AGENTS.md`, every active file the change touches and the files they import, excluding the access boundary unless the current task changes it, plus the exact change and live output.
 - The packet is one self-contained text: this file verbatim, the owner's task verbatim, every file in that set in full, the exact change with before and after code, all live output including failed runs, and prior rounds' adjudicated results. Never include the builder's own review or conclusions.
 - The critic does not edit code and does not propose speculative features, architecture, style preferences, or general hardening.

@@ -23,7 +23,8 @@ from binance import API_KEY, API_SECRET, FAPI, SPOT, get
 shots_wanted = int(sys.argv[1]) if len(sys.argv) > 1 else 5
 leg = Decimal(sys.argv[2]) if len(sys.argv) > 2 else Decimal(20)
 window = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
-confirm, floor, hold_max = 0.002, 100.0, 60.0
+confirm, hold_max = 0.002, 60.0
+floor = float(leg)   # the only size that matters: the touch must cover our own order; the exchange minimums are applied per pair below
 final = ("FILLED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED", "REJECTED")
 now = time.perf_counter_ns
 clock = time.time_ns

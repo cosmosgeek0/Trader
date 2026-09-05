@@ -2,9 +2,11 @@
 # USDT perpetual; when the perp bid clears the spot ask by more than this account's four taker fees on 100+ USDT of
 # touch and is still there 2 ms later, sends a spot limit IOC buy at the seen ask and a perp limit IOC sell at the seen
 # bid, back to back, one leg size in USDT. A leg whose price moved does not fill and costs nothing; a lone fill is
-# flattened at market at once; both fills are held until the books close back, or 60 s, then closed at market.
+# flattened at market at once; both fills are held until the exit rule says so, or the max hold, then closed at market.
+# Exit rules: close = the books closed back (perp ask <= spot bid); edge = the gap (perp bid over spot ask) shrank to at most
+# half the four-leg cost; fund = the books closed back after the perp's next funding settlement, read at entry.
 # Every line carries Binance's own timestamps. One shot at a time; stops after the shot count or the time window.
-#   python3 shots.py 5 20 600      five shots, 20 USDT a leg, within 600 s
+#   python3 shots.py 5 20 600 close 60      five shots, 20 USDT a leg, within 600 s, exit rule close, max hold 60 s
 import asyncio
 import hashlib
 import hmac
@@ -23,7 +25,11 @@ from binance import API_KEY, API_SECRET, FAPI, SPOT, get
 shots_wanted = int(sys.argv[1]) if len(sys.argv) > 1 else 5
 leg = Decimal(sys.argv[2]) if len(sys.argv) > 2 else Decimal(20)
 window = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
-confirm, hold_max = 0.002, 60.0
+rule = sys.argv[4] if len(sys.argv) > 4 else "close"
+hold_max = float(sys.argv[5]) if len(sys.argv) > 5 else 60.0
+if rule not in ("close", "edge", "fund"):
+    sys.exit(f"exit rule {rule}: use close, edge or fund")
+confirm = 0.002
 floor = float(leg)   # the only size that matters: the touch must cover our own order; the exchange minimums are applied per pair below
 final = ("FILLED", "EXPIRED", "EXPIRED_IN_MATCH", "CANCELED", "REJECTED")
 now = time.perf_counter_ns
@@ -55,7 +61,7 @@ for sym, s in spot_info.items():
     if least <= float(leg):
         pairs[sym] = {"step": step, "sb": 0.0, "sa": 0.0, "sB": 0.0, "sA": 0.0, "fb": 0.0, "fa": 0.0, "fB": 0.0, "fA": 0.0,
                       "sa_s": "", "fb_s": "", "su": 0, "fu": 0, "E": 0, "T": 0, "armed": None, "timer": None}
-state = {"busy": False, "shots": 0, "held": {}, "net": 0.0, "fees": 0.0, "done": False}
+state = {"busy": False, "shots": 0, "held": {}, "net": 0.0, "funding": 0.0, "fees": 0.0, "done": False}
 lanes = {"spot": "wss://ws-api.binance.com:443/ws-api/v3?timeUnit=MICROSECOND", "fut": "wss://ws-fapi.binance.com/ws-fapi/v1"}
 feeds = {"spot": "wss://stream.binance.com:9443/ws", "fut": "wss://fstream.binance.com/public/ws"}
 lane = {}
@@ -122,7 +128,15 @@ def filled(venue, r):
     q = Decimal(r["executedQty"])
     if venue == "spot":
         usdt = float(r["cummulativeQuoteQty"])
-        fee = sum(float(f["commission"]) * (bnb_usdt if f["commissionAsset"] == "BNB" else 1.0) for f in r.get("fills", []))
+        fee = 0.0
+        for f in r.get("fills", []):  # a fee taken in the coin itself shrinks what is held; price it at the fill
+            if f["commissionAsset"] == "BNB":
+                fee += float(f["commission"]) * bnb_usdt
+            elif f["commissionAsset"] == "USDT":
+                fee += float(f["commission"])
+            else:
+                q -= Decimal(f["commission"])
+                fee += float(f["commission"]) * usdt / float(r["executedQty"])
         stamp = int(r.get("transactTime") or r.get("updateTime") or 0)
         if stamp > 10 ** 14:
             stamp //= 1000   # spot stamps come in microseconds on this lane; keep every stamp in milliseconds
@@ -172,54 +186,68 @@ async def shot(sym):
     t_send = clock()
     spot_task = asyncio.ensure_future(order("spot", sym, "BUY", qty, seen_sa))
     fut_task = asyncio.ensure_future(order("fut", sym, "SELL", qty, seen_fb))
-    (sq, su, sf, ss, sms, sid), (fq, fu, ff, fs, fms, fid) = await asyncio.gather(spot_task, fut_task)
+    results = await asyncio.gather(spot_task, fut_task, return_exceptions=True)
+    legs = [(Decimal(0), 0.0, 0.0, 0, 0.0, None) if isinstance(g, BaseException) else g for g in results]
+    unknown = []
+    for venue, got in zip(("spot", "fut"), results):
+        if isinstance(got, RuntimeError):  # refused by Binance: nothing filled on that leg, the other leg stands
+            log(f"SHOT {k} {venue} refused: {got}")
+        elif isinstance(got, BaseException):  # no answer: that leg's state is unknown
+            unknown.append(venue)
+    if unknown:  # stop with what is known on record; the unknown leg must be checked on Binance by hand
+        state["held"] = {"sym": sym, "spot": legs[0][0], "fut": legs[1][0], "since": time.time(), "bought": 0.0, "shorted": 0.0}
+        raise LookupError(f"{sym} {' and '.join(unknown)} leg state unknown, verify on Binance")
+    (sq, su, sf, ss, sms, sid), (fq, fu, ff, fs, fms, fid) = legs
     state["fees"] += sf + ff
     log(f"SHOT {k} spot: filled {sq} for {su:.4f} USDT at {su / float(sq) if sq else 0:.6g}, fee {sf:.4f}, ack {sms:.2f} ms, "
         f"Binance stamp {ss} ({ss - seen_E} ms after perp E, {ss - t_send // 1000000} ms after send), orderId {sid}")
     log(f"SHOT {k} perp: filled {fq} for {fu:.4f} USDT at {fu / float(fq) if fq else 0:.6g}, fee {ff:.4f}, ack {fms:.2f} ms, "
         f"Binance stamp {fs} ({fs - seen_E} ms after perp E, {fs - seen_T} ms after perp T, {fs - t_send // 1000000} ms after send), orderId {fid}, "
         f"sent {(t_send - seen_at) // 1000} us after the decision")
-    held = {"spot": sq, "fut": fq}
-    if sq >= p["step"] and fq >= p["step"] and sq == fq:
-        state["held"] = {"sym": sym, "spot": sq, "fut": fq, "since": time.time(), "bought": su, "shorted": fu}
-        log(f"SHOT {k} HOLD both legs {sq} {sym}, entry edge {(fu - su):+.4f} USDT before fees")
+    if sq < p["step"] and fq < p["step"]:
+        log(f"SHOT {k} MISS: nothing filled, flat")
         return
-    # a lone or unequal fill: flatten the difference at market at once
-    if sq > fq:
-        q, u, f, s, ms, oid = await order("spot", sym, "SELL", sq - fq, None, True)
-        state["fees"] += f
-        state["net"] += u - su * float(q) / float(sq)
-        log(f"SHOT {k} FLATTEN spot sold {q} for {u:.4f} USDT, fee {f:.4f}, ack {ms:.2f} ms, orderId {oid}")
-        held["spot"] -= q
-    elif fq > sq:
-        q, u, f, s, ms, oid = await order("fut", sym, "BUY", fq - sq, None, True)
-        state["fees"] += f
-        state["net"] += fu * float(q) / float(fq) - u
-        log(f"SHOT {k} FLATTEN perp bought {q} for {u:.4f} USDT, fee {f:.4f}, ack {ms:.2f} ms, orderId {oid}")
-        held["fut"] -= q
-    if held["spot"] >= p["step"] and held["fut"] >= p["step"]:
-        state["held"] = {"sym": sym, "spot": held["spot"], "fut": held["fut"], "since": time.time(),
-                         "bought": su * float(held["spot"]) / float(sq), "shorted": fu * float(held["fut"]) / float(fq)}
-        log(f"SHOT {k} HOLD the matched part {held['spot']} {sym}")
-    else:
-        log(f"SHOT {k} MISS: spot {sq} perp {fq} filled, flat again, cost of the miss booked in net")
+    h = state["held"] = {"sym": sym, "spot": sq, "fut": fq, "since": time.time(), "bought": su, "shorted": fu}
+    if sq != fq:  # a lone or unequal fill: close the whole of both legs at market at once; a difference order can
+        log(f"SHOT {k} UNEQUAL spot {sq} perp {fq}: closing both at market")  # fall under a step or a minimum
+        await leave("unequal fill")
+        return
+    log(f"SHOT {k} HOLD {sq} {sym}, entry edge {fu - su:+.4f} USDT before fees")
+    if rule == "fund":
+        h["funding"] = int((await asyncio.to_thread(public, FAPI + f"/fapi/v1/premiumIndex?symbol={sym}"))["nextFundingTime"])
+        log(f"SHOT {k} next funding at {h['funding']}, {(h['funding'] - fs) / 1000:.0f} s after the perp fill stamp")
 
 
 async def leave(why):
     h = state["held"]
     sym = h["sym"]
-    log(f"EXIT {sym}: {why}")
-    (sq, su, sf, ss, sms, sid), (fq, fu, ff, fs, fms, fid) = await asyncio.gather(
-        order("spot", sym, "SELL", h["spot"], None, True), order("fut", sym, "BUY", h["fut"], None, True))
+    p = pairs[sym]
+    log(f"EXIT {sym}: {why}, held {time.time() - h['since']:.1f} s, gap {(p['fb'] / p['sa'] - 1) * 100:+.4f}% "
+        f"(spot {p['sb']}/{p['sa']}, perp {p['fb']}/{p['fa']})")
+    empty = (Decimal(0), 0.0, 0.0, 0, 0.0, None)
+    tasks = {v: asyncio.ensure_future(order(v, sym, "SELL" if v == "spot" else "BUY", h[v], None, True))
+             for v in ("spot", "fut") if h[v] >= p["step"]}  # only the legs that exist; each is booked on its own result
+    got = dict(zip(tasks, await asyncio.gather(*tasks.values(), return_exceptions=True)))
+    for v, r in got.items():
+        if isinstance(r, BaseException):
+            log(f"EXIT {v} failed: {r!r}")
+            got[v] = empty
+    sq, su, sf, ss, sms, sid = got.get("spot", empty)
+    fq, fu, ff, fs, fms, fid = got.get("fut", empty)
     state["fees"] += sf + ff
     state["net"] += su - h["bought"] + h["shorted"] - fu
-    log(f"EXIT spot sold {sq} for {su:.4f} USDT, fee {sf:.4f}, ack {sms:.2f} ms, orderId {sid}; perp bought {fq} for {fu:.4f}, fee {ff:.4f}, ack {fms:.2f} ms, orderId {fid}")
+    log(f"EXIT spot sold {sq} for {su:.4f} USDT at {su / float(sq) if sq else 0:.6g}, fee {sf:.4f}, ack {sms:.2f} ms, Binance stamp {ss}, orderId {sid}; "
+        f"perp bought {fq} for {fu:.4f} at {fu / float(fq) if fq else 0:.6g}, fee {ff:.4f}, ack {fms:.2f} ms, Binance stamp {fs}, orderId {fid}")
     left = {"spot": h["spot"] - sq, "fut": h["fut"] - fq}
     state["held"] = {}
-    if left["spot"] >= pairs[sym]["step"] or left["fut"] >= pairs[sym]["step"]:
+    if left["spot"] >= p["step"] or left["fut"] >= p["step"]:
         log(f"OPEN LEG {sym}: spot {left['spot']} perp short {left['fut']} still on Binance")
         state["held"] = {"sym": sym, "spot": left["spot"], "fut": left["fut"], "since": time.time(), "bought": 0.0, "shorted": 0.0}
         state["done"] = True
+    rows = await asyncio.to_thread(get, FAPI + "/fapi/v1/income", {"symbol": sym, "incomeType": "FUNDING_FEE", "startTime": int(h["since"] * 1000)})
+    funding = sum(float(r["income"]) for r in rows)
+    state["funding"] += funding
+    log(f"EXIT funding received {funding:+.4f} USDT in {len(rows)} settlements")
 
 
 async def run(coro):
@@ -237,7 +265,7 @@ def standing(sym):
     p["timer"] = None
     armed = p["armed"]
     p["armed"] = None
-    if armed is None or state["busy"] or state["held"] or state["done"] or not (p["sa"] and p["fb"]):
+    if armed is None or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted or not (p["sa"] and p["fb"]):
         return
     if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor:
         state["busy"] = True
@@ -257,10 +285,20 @@ def on_book(venue, d):
         p["sa_s"] = d["a"]
     else:
         p["fb_s"], p["E"], p["T"] = d["b"], d.get("E", 0), d.get("T", 0)
-    if state["held"] and state["held"]["sym"] == d["s"] and not state["busy"] and p["fa"] and p["sb"] and p["fa"] <= p["sb"]:
-        state["busy"] = True
-        asyncio.ensure_future(run(leave("books closed back")))
-        return
+    h = state["held"]
+    if h and h["sym"] == d["s"] and not state["busy"] and not state["done"] and p["fa"] and p["sb"]:
+        if rule == "edge" and p["fb"] / p["sa"] - 1 <= cost / 2:
+            why = "gap within half the cost"
+        elif rule == "fund" and p["T"] >= h["funding"] and p["fa"] <= p["sb"]:
+            why = "books closed back after the funding"
+        elif rule == "close" and p["fa"] <= p["sb"]:
+            why = "books closed back"
+        else:
+            why = ""
+        if why:
+            state["busy"] = True
+            asyncio.ensure_future(run(leave(why)))
+            return
     if not (p["sa"] and p["fb"]) or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted:
         return
     if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor:
@@ -305,18 +343,19 @@ async def main():
         lane[name] = (await ws_connect(Lane, lanes[name], enable_auto_ping=True, auto_ping_idle_timeout=5, auto_ping_reply_timeout=5))[1]
         await ask(name, "order.status", {"symbol": "BTCUSDT", "orderId": 1})  # a signed round trip warms the lane
     log(f"{len(pairs)} pairs, leg {leg} USDT, spot taker {spot_fee * 100:.4f}% perp taker {fut_fee * 100:.4f}% four legs {cost * 100:.4f}%, "
-        f"confirm {confirm * 1000:.0f} ms, touch floor {floor:.0f} USDT, {shots_wanted} shots in {window:.0f} s")
+        f"confirm {confirm * 1000:.0f} ms, touch floor {floor:.0f} USDT, exit {rule}, max hold {hold_max:.0f} s, {shots_wanted} shots in {window:.0f} s")
     tasks = [asyncio.ensure_future(keep(v, i * 0.3)) for i, v in enumerate(("spot", "fut", "spot", "fut", "spot", "fut"))]
     started = time.time()
     while not state["done"]:
         await asyncio.sleep(0.05)
         if state["held"] and not state["busy"] and time.time() - state["held"]["since"] > hold_max:
-            await run(leave(f"held {hold_max:.0f} s"))
+            await run(leave(f"max hold {hold_max:.0f} s"))
         elif not state["held"] and not state["busy"] and (state["shots"] >= shots_wanted or time.time() - started > window):
             break
     for t in tasks:
         t.cancel()
-    log(f"DONE {state['shots']} shots, gross {state['net']:+.4f} USDT, fees {state['fees']:.4f}, net {state['net'] - state['fees']:+.4f}"
+    log(f"DONE {state['shots']} shots, gross {state['net']:+.4f} USDT, funding {state['funding']:+.4f}, fees {state['fees']:.4f}, "
+        f"net {state['net'] + state['funding'] - state['fees']:+.4f}"
         + (f", OPEN {state['held']}" if state["held"] else ""))
     sys.exit(1 if state["held"] else 0)
 

@@ -137,6 +137,8 @@ def filled(venue, r):
             else:
                 q -= Decimal(f["commission"])
                 fee += float(f["commission"]) * usdt / float(r["executedQty"])
+        if "fills" not in r:  # a looked-up order carries no fills: charge the fee by this account's rate
+            fee = usdt * spot_fee
         stamp = int(r.get("transactTime") or r.get("updateTime") or 0)
         if stamp > 10 ** 14:
             stamp //= 1000   # spot stamps come in microseconds on this lane; keep every stamp in milliseconds
@@ -203,7 +205,7 @@ async def shot(sym):
         f"Binance stamp {ss} ({ss - seen_E} ms after perp E, {ss - t_send // 1000000} ms after send), orderId {sid}")
     log(f"SHOT {k} perp: filled {fq} for {fu:.4f} USDT at {fu / float(fq) if fq else 0:.6g}, fee {ff:.4f}, ack {fms:.2f} ms, "
         f"Binance stamp {fs} ({fs - seen_E} ms after perp E, {fs - seen_T} ms after perp T, {fs - t_send // 1000000} ms after send), orderId {fid}, "
-        f"sent {(t_send - seen_at) // 1000} us after the decision")
+        f"both orders built and queued {(t_send - seen_at) // 1000} us after the decision")
     if sq < p["step"] and fq < p["step"]:
         log(f"SHOT {k} MISS: nothing filled, flat")
         return

@@ -248,6 +248,19 @@
     logsEl = null;
     logsBar = null;
     clearInterval(logsTimer);
+    if (ovRequest) {
+      clearTimeout(ovRequest.timeout);
+      ovRequest.controller.abort();
+    }
+    ovRequest = null;
+    ovEl = null;
+    ovDot = null;
+    ovAge = null;
+    ovCells = null;
+    ovPlotEl = null;
+    ovPlace = null;
+    ovHoverAt = null;
+    clearInterval(ovTimer);
     if (acctRequest) {
       clearTimeout(acctRequest.timeout);
       acctRequest.controller.abort();
@@ -286,7 +299,31 @@
     basisPaint = null;
     basisDot = null;
     basisAge = null;
+    basisSync = null;
     clearInterval(basisTimer);
+    if (volRequest) {
+      clearTimeout(volRequest.timeout);
+      volRequest.controller.abort();
+    }
+    volRequest = null;
+    volEl = null;
+    volBar = null;
+    volPaint = null;
+    volDot = null;
+    volAge = null;
+    clearInterval(volTimer);
+    if (machRequest) {
+      clearTimeout(machRequest.timeout);
+      machRequest.controller.abort();
+    }
+    machRequest = null;
+    machEl = null;
+    machBar = null;
+    machParts = null;
+    machDot = null;
+    machAge = null;
+    closeMachEdit();
+    clearInterval(machTimer);
     var page = document.createElement("div");
     page.className = "page-shell";
     var head = document.createElement("div");
@@ -297,13 +334,11 @@
     page.appendChild(head);
     pageEl.appendChild(page);
     if (h === "overview") {
-      buildStub(page, "overview", [["all", "All"]], ["#", "Section", "Detail", "Value"]);
+      buildOverview(page, head);
     } else if (h === "machine") {
-      buildStub(page, "machine", [["all", "All"], ["bnorm", "Basis"], ["brev", "Reverse"], ["spread", "Volume"]],
-        ["#", "Strategy", "State", "Detail", "Value"]);
+      buildMachine(page, head);
     } else if (h === "basis") { buildBasis(page, head); } else if (h === "volume") {
-      buildStub(page, "volume", [["all", "All"], ["spot", "Spot only"], ["fut", "Futures only"]],
-        ["#", "Token", "Price", "Volume 24h", "Vol 1h"]);
+      buildVolume(page, head);
     } else if (h === "settings") { buildSettings(page, head); }
     else if (h === "news") { buildNews(page, head); }
     else if (h === "network") { buildNetwork(page, head); }
@@ -1581,6 +1616,7 @@
       var oldVersion = lawRules() ? lawRules().version : null;
       rulesOk = true;
       rulesData = d;
+      paintOv();
       if (rulesStale) {
         rulesError = "The law changed elsewhere — your last change was not saved.";
       }
@@ -3239,7 +3275,7 @@
     marketsTimer = setInterval(fetchMarkets, 1000);
   }
 
-  /* ---- basis: the crossing log ---- */
+  /* ---- basis: live executable gaps at the top of the book, both directions, no orders ---- */
   var basisEl = null;
   var basisTimer = null;
   var basisRequest = null;
@@ -3248,23 +3284,34 @@
   var basisDot = null;
   var basisAge = null;
   var basisPaint = null;
+  var basisSync = null;
+  var basisOn = true;
 
-  function eventKey(e) { return e.sym + ":" + e.open; }
+  function eventKey(e) { return e.sym + ":" + e.side + ":" + e.t; }
 
   function eventClock(ms) {
     return hoverTimeFmt.format(new Date(ms)) + "." + Math.floor(ms % 1000 / 100);
   }
 
+  function eventLasted(ms) {
+    return ms < 1000 ? ms + " ms" : ms < 60000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms / 60000) + " min";
+  }
+
+  function eventSide(e) {
+    var lots = e.lots > 1 ? " · " + (e.lots - 1) + " adds" : "";
+    var real = e.real ? "REAL · " : (e.real === false ? "paper · " : "");
+    if (e.side === "n") { return real + "buy spot · short futures" + lots; }
+    return real + "sell spot · long futures · borrow available $" + Math.round(e.borrow).toLocaleString("en-US") + lots;
+  }
+
+  function money(v) { return (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(Math.abs(v) < 0.01 && v !== 0 ? 4 : 2); }
+
   function eventTexts(e) {
-    var dur = e.live ? (Date.now() - e.open) / 1000 : e.dur;
-    return [eventClock(e.open),
-      "+" + e.net.toFixed(3) + "%",
-      "+" + e.peak.toFixed(3) + "%",
-      (e.pbas > 0 ? "+" : "") + e.pbas.toFixed(3) + "%",
-      e.upk === undefined ? "—" : "$" + (e.upk >= 1000 ? (e.upk / 1000).toFixed(1) + "K" : String(e.upk)),
-      (dur >= 60 ? Math.floor(dur / 60) + "m " + Math.round(dur % 60) + "s"
-        : dur >= 1 ? dur.toFixed(1) + "s" : Math.round(dur * 1000) + "ms"),
-      e.live ? "live" : (e.why || "ended") + " " + eventClock(e.close)];
+    var open = e.made === null;
+    var carry = (e.fund || 0) - (e.cost || 0);
+    return [eventClock(e.taken), fmtSigned(e.gap, 4), fmtSigned(e.net, 4), "$" + e.size.toFixed(2),
+      fmtSigned(e.now, 4), money(carry), open ? "open " + money(e.size * e.now / 100 + (e.fund || 0)) : money(e.made),
+      eventLasted(open ? Math.max(0, (basisData.at || 0) - e.taken) : e.held)];
   }
 
   function eventRow(e) {
@@ -3275,47 +3322,83 @@
     tok.appendChild(tokenBadge(tokenName(e)));
     var col = tok.appendChild(el("span", "news-source-col"));
     col.appendChild(el("span", "news-source-name", tokenName(e)));
-    col.appendChild(el("span", "news-domain", e.dir === "+" ? "futures above spot" : "spot above futures · pool open"));
+    row.side = col.appendChild(el("span", "news-domain", eventSide(e)));
     row.appendChild(tok);
     row.texts = [];
-    for (var ci = 0; ci < 7; ci += 1) {
-      var cell = el("span", "mkt-num" + (ci === 2 || ci === 4 ? " up" : ""));
+    row.cells = [];
+    for (var ci = 0; ci < 8; ci += 1) {
+      var cell = el("span", "mkt-num" + (ci === 2 ? " up" : ""));
       var tn = document.createTextNode("");
       cell.appendChild(tn);
       row.appendChild(cell);
       row.texts.push(tn);
+      row.cells.push(cell);
     }
-    row.statusCell = row.children[row.children.length - 1];
     return row;
   }
 
   function drawBasisStatus() {
     if (!basisDot) { return; }
+    basisEl.classList.toggle("off", !basisOn);
+    if (!basisOn) {
+      basisDot.className = "status-dot";
+      basisAge.textContent = "Off";
+      return;
+    }
     var stale = !basisData || Date.now() - basisData.at > 10000;
     var blind = basisData && basisData.ready === false;
     basisDot.className = "status-dot " + (!basisOk ? "dead" : !basisData ? "" : stale || blind ? "stale" : "live");
-    basisAge.textContent = !basisOk ? "Offline" : !basisData ? "" : stale ? "Stale" : blind ? "Feed down" : "Live";
+    basisAge.textContent = !basisOk ? "Feed offline" : !basisData ? "" : stale ? "Feed stale"
+      : blind ? "Feed partial " + (basisData.coverage || 0) + "/" + (basisData.pairs || 0) : "Feed live";
+  }
+
+  function basisCap() {
+    var d = basisData || {};
+    if (d.rule) {
+      return "Crossings above this account's four fees at the top of both books, still standing 2 ms after first sight · paper twin while the switch is off, real "
+        + (d.floor || 0) + " USDT shots while it is on · exit " + d.rule + ", max hold " + (d.hold || 0) + " s · trading " + (d.trading ? "ON" : "off");
+    }
+    var w = d.wait || {};
+    return "Gaps above cost at the top of the book · taken " + (w.n || "…") + " ms after they open, " + (w.r || "…")
+      + " ms for a reverse one after its borrow-pool read, one position per pair that grows when its gap comes back wider, held until closing pays the promised net on the whole position, funding and borrow interest counted · no orders placed";
+  }
+
+  function basisExplain() {
+    var d = basisData || {};
+    var td = d.today || {};
+    var closed = td.closed || {}, made = td.made || {};
+    if (d.rule) {
+      return "Open " + (d.open || 0) + ", " + money(d.unreal || 0) + " if closed now, " + money(d.carry || 0)
+        + " funding · closed today: REAL " + (closed.n || 0) + " for " + money(made.n || 0)
+        + " · paper " + (closed.r || 0) + " for " + money(made.r || 0)
+        + " · feed " + (d.coverage || 0) + "/" + (d.pairs || 0);
+    }
+    return "Open " + (d.open || 0) + " positions, " + money(d.unreal || 0) + " unrealized, " + money(d.carry || 0)
+      + " carry · closed today: buy spot / short futures " + (closed.n || 0) + " for " + money(made.n || 0)
+      + ", sell spot / long futures " + (closed.r || 0) + " for " + money(made.r || 0)
+      + " · feed " + (d.coverage || 0) + "/" + (d.pairs || 0);
+  }
+
+  function basisEmpty() {
+    return "No position among the live pairs.";
   }
 
   function drawBasis() {
     if (!basisEl) { return; }
     basisEl.textContent = "";
-    basisEl.appendChild(el("div", "basis-cap",
-      "Crossings · net = basis − spread − taker fees ("
-      + (basisData && basisData.fees ? basisData.fees.toFixed(2) : "0.30")
-      + "%, ETH-reference), before funding and borrow carry · negative side only when pool > 0 · the log stays"));
+    var cap = basisEl.appendChild(el("div", "basis-cap", basisCap()));
+    var explain = basisEl.appendChild(el("div", "basis-explain", basisExplain()));
     var list = el("div", "news-list");
     var headRow = el("div", "mkt-row news-head-row");
     headRow.appendChild(el("span", "mkt-rank", "#"));
-    ["Token", "When", "Cross net", "Net peak", "Basis @ pk", "Size @ pk $", "Lived", "State"].forEach(function (c) {
+    ["Token", "When", "Gap", "Net", "Size", "Now", "Carry", "Made", "Held"].forEach(function (c) {
       headRow.appendChild(el("span", "mkt-head", c));
     });
     list.appendChild(headRow);
     var body = list.appendChild(el("div"));
-    var note = list.appendChild(el("div", "news-empty",
-      "No crossing recorded yet."));
+    var note = list.appendChild(el("div", "news-empty", basisEmpty()));
     note.hidden = false;
-    basisPaint = { body: body, note: note, rows: {} };
+    basisPaint = { body: body, note: note, cap: cap, explain: explain, rows: {} };
     basisEl.appendChild(list);
     if (basisData) { paintBasis(); }
     drawBasisStatus();
@@ -3324,7 +3407,11 @@
   function paintBasis() {
     if (!basisEl || !basisData) { return; }
     if (!basisPaint) { drawBasis(); return; }
-    var events = (basisData.events || []).slice(0, 300);
+    var capText = basisCap();
+    if (basisPaint.cap.textContent !== capText) { basisPaint.cap.textContent = capText; }
+    var explainText = basisExplain();
+    if (basisPaint.explain.textContent !== explainText) { basisPaint.explain.textContent = explainText; }
+    var events = basisData.rows || [];
     var body = basisPaint.body;
     var first = {};
     Array.prototype.forEach.call(body.children, function (n) {
@@ -3343,8 +3430,13 @@
       eventTexts(e).forEach(function (t, ci) {
         if (row.texts[ci].nodeValue !== t) { row.texts[ci].nodeValue = t; }
       });
-      var cls = "mkt-num" + (e.live ? " up" : "");
-      if (row.statusCell.className !== cls) { row.statusCell.className = cls; }
+      var sideText = eventSide(e);
+      if (row.side.textContent !== sideText) { row.side.textContent = sideText; }
+      var now = "mkt-num" + (e.now < 0 ? " down" : e.now > 0 ? " up" : "");
+      if (row.cells[4].className !== now) { row.cells[4].className = now; }
+      var worth = e.made === null ? e.size * e.now / 100 + (e.fund || 0) : e.made;
+      var tone = "mkt-num" + (worth < 0 ? " down" : worth > 0 ? " up" : "");
+      if (row.cells[6].className !== tone) { row.cells[6].className = tone; }
       if (body.children[i] !== row) { body.insertBefore(row, body.children[i] || null); }
     });
     Object.keys(basisPaint.rows).forEach(function (key) {
@@ -3363,15 +3455,13 @@
       if (d) { n.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }], { duration: 260, easing: "ease" }); }
     });
     basisPaint.note.hidden = events.length > 0;
-    basisPaint.note.textContent = basisData.ready === false
-      ? "No crossing recorded — feed connecting."
-      : "No crossing recorded yet.";
+    basisPaint.note.textContent = basisEmpty();
     drawBasisStatus();
   }
 
   function fetchBasis(force) {
     if (!basisEl || basisRequest) { return; }
-    if (force !== true && document.hidden) { return; }
+    if (force !== true && (!basisOn || document.hidden)) { return; }
     var controller = new AbortController();
     var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
     basisRequest = request;
@@ -3400,8 +3490,22 @@
 
   function buildBasis(page, head) {
     page.classList.add("basis");
-    var acts = el("div", "set-actions news-acts");
+    var acts = el("div", "set-actions");
     acts.appendChild(refreshButton(function () { fetchBasis(true); }));
+    var sw = el("button", "set-switch" + (basisOn ? " on" : ""));
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", basisOn ? "true" : "false");
+    sw.setAttribute("aria-label", "Basis feed");
+    basisSync = function (v) {
+      basisOn = v;
+      sw.classList.toggle("on", v);
+      sw.setAttribute("aria-checked", v ? "true" : "false");
+      drawBasisStatus();
+      if (v) { fetchBasis(); }
+    };
+    sw.addEventListener("click", function () { feedState("/api/basis", !basisOn, basisSync); });
+    feedState("/api/basis", undefined, basisSync);
+    acts.appendChild(sw);
     var live = acts.appendChild(el("span", "status"));
     basisDot = live.appendChild(el("i", "status-dot"));
     basisAge = live.appendChild(el("span"));
@@ -3410,6 +3514,1138 @@
     drawBasis();
     fetchBasis(true);
     basisTimer = setInterval(fetchBasis, 1000);
+  }
+
+  /* ---- overview: the front door — live account bezel ---- */
+  var ovData = null;
+  var ovOk = true;
+  var ovEl = null;
+  var ovDot = null;
+  var ovAge = null;
+  var ovTimer = null;
+  var ovRequest = null;
+  var ovCells = null;
+  var ovPlotEl = null;
+  var ovPlace = null;
+  var ovHoverAt = null;
+  var ovDayFmt = null;
+  var ovDayLongFmt = null;
+  var ovView = { range: 0 };
+  try { ovView = JSON.parse(localStorage.getItem("quant.overview")) || ovView; } catch (e) { /* private mode */ }
+  if ([7, 30, 90, 0].indexOf(ovView.range) === -1) { ovView.range = 0; }
+
+  function saveOv() {
+    try { localStorage.setItem("quant.overview", JSON.stringify(ovView)); } catch (e) { /* private mode */ }
+  }
+
+  function ovCell(label) {
+    var cell = el("div", "ovr-cell");
+    var val = cell.appendChild(el("span", "ovr-val", "—"));
+    cell.appendChild(el("span", "ovr-lbl", label));
+    return { cell: cell, val: val };
+  }
+
+  function ovSet(c, text, tip, tone) {
+    if (c.val.textContent !== text) { c.val.textContent = text; }
+    var cls = "ovr-val" + (tone ? " " + tone : "");
+    if (c.val.className !== cls) { c.val.className = cls; }
+    c.cell.setAttribute("data-tip", tip);
+  }
+
+  function drawOvStatus() {
+    if (!ovEl) { return; }
+    var stale = !ovData || Date.now() - ovData.at > ovData.every * 3000;
+    ovDot.className = "status-dot " + (!ovOk ? "dead" : !ovData ? "" : stale ? "stale" : "live");
+    ovAge.textContent = !ovOk ? "Offline" : !ovData ? "" : stale ? "Stale" : "Live";
+  }
+
+  function paintOv() {
+    if (!ovEl) { return; }
+    drawOvStatus();
+    if (!ovData) { return; }
+    var d = ovData;
+    ovSet(ovCells.total, fmtMoney(d.total), ACCT_WALLETS.map(function (w) {
+      return w[1] + " " + fmtMoney(d.wallets[w[0]] || 0);
+    }).join(" · "));
+    var lastDay = (d.days || []).length - 1;
+    if (lastDay < 1) {
+      ovSet(ovCells.today, "—", "First full day starts at 00:00 UTC");
+    } else {
+      var latest = d.days[lastDay];
+      var prior = d.days[lastDay - 1];
+      var diff = latest[1] - prior[1] - latest[2];
+      ovSet(ovCells.today, (diff >= 0 ? "+" : "") + fmtMoney(diff),
+        "Since 00:00 UTC · previous close " + fmtMoney(prior[1])
+        + " · net moved " + fmtMoney(latest[2]),
+        diff > 0 ? "up" : diff < 0 ? "down" : "");
+    }
+    var pnl = d.futures.pnl;
+    ovSet(ovCells.upnl, (pnl >= 0 ? "+" : "") + fmtMoney(pnl),
+      "Futures margin balance " + fmtMoney(d.futures.margin_balance)
+      + " · maintenance " + fmtMoney(d.futures.maintenance),
+      pnl > 0 ? "up" : pnl < 0 ? "down" : "");
+    ovSet(ovCells.open, String(d.positions.length),
+      (d.positions.length ? d.positions.map(function (p) { return p.symbol; }).join(", ") + " · " : "")
+      + d.orders.length + " open orders");
+    ovSet(ovCells.borrowed, fmtMoney(d.margin.borrowed), d.margin.borrowed > 0
+      ? "Margin level " + (d.margin.level >= 999 ? "∞" : d.margin.level.toFixed(2)) : "No margin debt");
+    ovSet(ovCells.earn, fmtMoney(d.wallets.earn || 0), "Simple Earn holdings at current prices");
+    var m = lawRules() && lawRules().machine;
+    ovSet(ovCells.machine, m ? fmtMoney(Math.max(0, m.lifetime_usdt - m.used_usdt)) : "—",
+      m ? "What the law lets the machine spend · mode " + m.mode + " · lifetime "
+        + fmtMoneyExact(m.lifetime_usdt) + " minus used " + fmtMoneyExact(m.used_usdt)
+        : "Law not loaded yet");
+    ovPlot();
+  }
+
+  function ovTag(chip, back, rows, px, W, gutter, top) {
+    var rowH = 18, padX = 10, padY = 9;
+    var made = rows.map(function (row, index) {
+      var ty = top + 15 + padY + rowH * index;
+      var square = row.dot ? chip.appendChild(svg("rect", { y: ty - 8, width: 8, height: 8, rx: 2,
+        style: "fill:" + row.dot })) : null;
+      var name = chip.appendChild(svg("text", { y: ty }));
+      name.textContent = row.label;
+      var value = null;
+      if (row.value) {
+        value = chip.appendChild(svg("text", { y: ty, "text-anchor": "end" }));
+        value.textContent = row.value;
+      }
+      return { square: square, name: name, value: value };
+    });
+    var nameW = 0, valueW = 0;
+    made.forEach(function (m, index) {
+      nameW = Math.max(nameW, (rows[index].dot ? 14 : 0) + m.name.getBBox().width);
+      if (m.value) { valueW = Math.max(valueW, m.value.getBBox().width); }
+    });
+    var boxW = padX * 2 + nameW + (valueW ? 24 + valueW : 0);
+    var boxX = px + 14;
+    if (boxX + boxW > W) { boxX = px - 14 - boxW; }
+    if (boxX < gutter) { boxX = gutter; }
+    back.setAttribute("x", boxX);
+    back.setAttribute("width", boxW);
+    back.setAttribute("height", padY * 2 + rowH * rows.length - 4);
+    made.forEach(function (m, index) {
+      if (m.square) { m.square.setAttribute("x", boxX + padX); }
+      m.name.setAttribute("x", boxX + padX + (rows[index].dot ? 14 : 0));
+      if (m.value) { m.value.setAttribute("x", boxX + boxW - padX); }
+    });
+  }
+
+  function ovPlot() {
+    if (!ovPlotEl) { return; }
+    ovPlotEl.textContent = "";
+    ovPlace = null;
+    var days = ovData && ovData.days ? ovData.days : [];
+    if (days.length < 2) {
+      ovPlotEl.appendChild(el("div", "page-sub",
+        "No daily history yet — the account feed builds it from Binance records."));
+      return;
+    }
+    var start = ovView.range ? Math.max(0, days.length - ovView.range) : 0;
+    var movements = {};
+    (ovData.flows || []).forEach(function (r) {
+      var moved = movements[r[0]] || (movements[r[0]] = { inn: 0, out: 0 });
+      if (r[3] >= 0) { moved.inn += r[3]; } else { moved.out -= r[3]; }
+    });
+    var pts = [];
+    for (var i = start; i < days.length; i++) {
+      var d = days[i];
+      var moved = movements[d[0]] || { inn: 0, out: 0 };
+      pts.push({ date: d[0], close: d[1],
+        pnl: i ? d[1] - days[i - 1][1] - d[2] : null,
+        inn: moved.inn, out: moved.out });
+    }
+    var W = Math.max(ovPlotEl.clientWidth, 860);
+    var H = 380;
+    var gutter = 54;
+    var top = 28;
+    var base = H - 24;
+    var plotW = W - gutter;
+    var plotH = base - top;
+    var lo = Infinity;
+    var hi = -Infinity;
+    pts.forEach(function (p) {
+      lo = Math.min(lo, p.close);
+      hi = Math.max(hi, p.close);
+    });
+    var span = hi - lo;
+    var pad = Math.max(span * 0.12, Math.max(Math.abs(hi), 1) * 0.00005);
+    var yMin = Math.max(0, lo - pad);
+    var yMax = hi + pad;
+    if (yMax <= yMin) { yMax = yMin + 1; }
+    var vy = function (v) {
+      return top + 8 + (yMax - v) / (yMax - yMin) * (plotH - 16);
+    };
+    var tick = function (v) {
+      var a = Math.abs(v);
+      if (yMax - yMin < 10) { return v.toFixed(2); }
+      if (a >= 1000 && yMax - yMin >= 1000) {
+        var n = v / 1000;
+        return (Math.abs(n) >= 10 ? n.toFixed(0) : n.toFixed(1)).replace(/\.0$/, "") + "K";
+      }
+      return String(Math.round(v));
+    };
+    var chart = svg("svg", { width: W, height: H, viewBox: "0 0 " + W + " " + H,
+      "class": "net-graph", role: "img", "aria-label": "Account value history" });
+    for (var t = 0; t < 5; t++) {
+      var value = yMax - (yMax - yMin) * t / 4;
+      var y = vy(value);
+      if (t && t < 4) {
+        chart.appendChild(svg("line", { x1: gutter, y1: y, x2: W, y2: y, "class": "grid" }));
+      }
+      chart.appendChild(svg("text", { x: 0, y: y + 4 })).textContent = tick(value);
+    }
+    var slot = plotW / pts.length;
+    var xc = function (index) { return gutter + index * slot + slot / 2; };
+    if (!ovView.range) {
+      var monthStarts = [];
+      pts.forEach(function (p, index) {
+        if (p.date.slice(8) === "01") { monthStarts.push(index); }
+      });
+      var monthStep = Math.ceil(monthStarts.length / Math.max(Math.floor(plotW / 70), 4));
+      var monthFmt = new Intl.DateTimeFormat(locale(), { month: "short", timeZone: "UTC" });
+      monthStarts.forEach(function (index, nth) {
+        if (xc(index) > gutter + 10 && xc(index) < W - 10) {
+          chart.appendChild(svg("line", { x1: xc(index), y1: top, x2: xc(index), y2: base,
+            "class": "grid" }));
+        }
+        if (nth % monthStep) { return; }
+        var when = new Date(pts[index].date + "T00:00:00Z");
+        var label = svg("text", { x: xc(index), y: H - 6, "text-anchor": "middle" });
+        label.textContent = monthFmt.format(when)
+          + (when.getUTCMonth() === 0 || !nth ? " " + String(when.getUTCFullYear()).slice(2) : "");
+        chart.appendChild(label);
+      });
+    } else {
+      var dayStep = Math.ceil(pts.length / Math.max(Math.floor(plotW / 130), 4));
+      pts.forEach(function (p, index) {
+        var last = index === pts.length - 1;
+        if (!last && ((pts.length - 1 - index) % dayStep || xc(index) > W - 84)) { return; }
+        if (xc(index) > gutter + 10 && xc(index) < W - 10) {
+          chart.appendChild(svg("line", { x1: xc(index), y1: top, x2: xc(index), y2: base,
+            "class": "grid" }));
+        }
+        var label = svg("text", last ? { x: W - 2, y: H - 6, "text-anchor": "end" }
+          : { x: xc(index), y: H - 6, "text-anchor": "middle" });
+        label.textContent = last ? "today" : ovDayFmt.format(new Date(p.date + "T00:00:00Z"));
+        chart.appendChild(label);
+      });
+    }
+    var line = pts.map(function (p, index) { return { x: xc(index), y: vy(p.close) }; });
+    chart.appendChild(svg("path", { d: flow(line), "class": "line", style: "--net-line:#d9a52b" }));
+    line.forEach(function (point) {
+      chart.appendChild(svg("circle", { cx: point.x.toFixed(1), cy: point.y.toFixed(1), r: 2.5,
+        "class": "dot", style: "--net-line:#d9a52b" }));
+    });
+    var mark = chart.appendChild(svg("line", { y1: top, y2: base, "class": "hover", visibility: "hidden" }));
+    var ring = chart.appendChild(svg("circle", { r: 4, "class": "dot ring", visibility: "hidden",
+      style: "--net-line:#d9a52b" }));
+    var chip = chart.appendChild(svg("g", { "class": "tag", visibility: "hidden" }));
+    ovPlace = function () {
+      var box = ovHoverAt ? chart.getBoundingClientRect() : null;
+      var inside = box && ovHoverAt.x >= box.left + gutter / W * box.width
+        && ovHoverAt.x <= box.left + box.width
+        && ovHoverAt.y >= box.top && ovHoverAt.y <= box.top + base / H * box.height;
+      if (!inside) {
+        mark.setAttribute("visibility", "hidden");
+        ring.setAttribute("visibility", "hidden");
+        chip.setAttribute("visibility", "hidden");
+        return;
+      }
+      var at = Math.floor(((ovHoverAt.x - box.left) / box.width * W - gutter) / slot);
+      at = Math.min(pts.length - 1, Math.max(0, at));
+      var p = pts[at];
+      var px = xc(at);
+      mark.setAttribute("x1", px);
+      mark.setAttribute("x2", px);
+      mark.setAttribute("visibility", "visible");
+      ring.setAttribute("cx", px);
+      ring.setAttribute("cy", vy(p.close));
+      ring.setAttribute("visibility", "visible");
+      chip.textContent = "";
+      var back = chip.appendChild(svg("rect", { y: top + 6, rx: 6 }));
+      var rows = [
+        { dot: null, label: ovDayLongFmt.format(new Date(p.date + "T00:00:00Z"))
+          + (at === pts.length - 1 ? " · live" : ""), value: "" },
+        { dot: p.pnl === null ? null : p.pnl >= 0 ? "#2ebd85" : "#cc2f3c",
+          label: "Day P&L", value: p.pnl === null ? "—" : (p.pnl >= 0 ? "+" : "") + fmtMoney(p.pnl) },
+        { dot: "#3b82f6", label: "Deposits", value: "+" + fmtMoney(p.inn) },
+        { dot: "#ec4899", label: "Withdrawals", value: "−" + fmtMoney(p.out) },
+        { dot: "#d9a52b", label: "Account value", value: fmtMoney(p.close) }
+      ];
+      ovTag(chip, back, rows, px, W, gutter, top);
+      chip.setAttribute("visibility", "visible");
+    };
+    ovPlotEl.appendChild(chart);
+    ovPlace();
+  }
+
+  function fetchOv(force) {
+    if (!ovEl || ovRequest) { return; }
+    if (force !== true && document.hidden) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    ovRequest = request;
+    fetch("/account.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (ovRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        ovRequest = null;
+        if (!ovEl) { return; }
+        ovOk = true;
+        if (ovData && ovData.at === d.at) { drawOvStatus(); return; }
+        ovData = d;
+        paintOv();
+      }).catch(function () {
+        if (ovRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        ovRequest = null;
+        if (!ovEl) { return; }
+        ovOk = false;
+        drawOvStatus();
+      });
+  }
+
+  function buildOverview(page, head) {
+    var acts = el("div", "set-actions");
+    acts.appendChild(refreshButton(function () { fetchOv(true); fetchRules(); }));
+    var live = acts.appendChild(el("span", "status"));
+    ovDot = live.appendChild(el("i", "status-dot"));
+    ovAge = live.appendChild(el("span"));
+    head.appendChild(acts);
+    page.classList.add("overview");
+    var strip = el("div", "ovr-strip");
+    ovCells = { total: ovCell("Account value"), today: ovCell("Today"),
+      upnl: ovCell("Unrealized PnL"), open: ovCell("Open positions"),
+      borrowed: ovCell("Borrowed"), earn: ovCell("Earn"),
+      machine: ovCell("Machine sees") };
+    [ovCells.total, ovCells.today, ovCells.upnl, ovCells.open,
+      ovCells.borrowed, ovCells.earn, ovCells.machine].forEach(function (c) {
+      strip.appendChild(c.cell);
+    });
+    ovEl = page.appendChild(strip);
+    ovDayFmt = new Intl.DateTimeFormat(locale(), { day: "numeric", month: "short", timeZone: "UTC" });
+    ovDayLongFmt = new Intl.DateTimeFormat(locale(),
+      { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" });
+    var bar = page.appendChild(el("div", "news-pills"));
+    var seg = el("div", "net-range");
+    seg.setAttribute("role", "group");
+    seg.setAttribute("aria-label", "History range");
+    [[7, "7D"], [30, "30D"], [90, "90D"], [0, "ALL"]].forEach(function (o) {
+      var b = el("button", "net-range-btn" + (ovView.range === o[0] ? " on" : ""), o[1]);
+      b.setAttribute("aria-pressed", ovView.range === o[0] ? "true" : "false");
+      b.addEventListener("click", function () {
+        ovView.range = o[0];
+        saveOv();
+        selectOne(b);
+        Array.prototype.forEach.call(seg.children, function (x) {
+          x.setAttribute("aria-pressed", x === b ? "true" : "false");
+        });
+        ovPlot();
+      });
+      seg.appendChild(b);
+    });
+    bar.appendChild(seg);
+    ovPlotEl = page.appendChild(el("div", "ovr-plot"));
+    ovPlotEl.addEventListener("mousemove", function (ev) {
+      ovHoverAt = { x: ev.clientX, y: ev.clientY };
+      if (ovPlace) { ovPlace(); }
+    });
+    ovPlotEl.addEventListener("mouseleave", function () {
+      ovHoverAt = null;
+      if (ovPlace) { ovPlace(); }
+    });
+    paintOv();
+    fetchOv(true);
+    fetchRules();
+    ovTimer = setInterval(function () {
+      fetchOv();
+      if (!rulesFetching && !rulesBusy) { fetchRules(); }
+    }, 5000);
+  }
+
+  /* ---- machine: the standing runners' files, one table, controls through flag files ---- */
+  var machData = null;
+  var machOk = true;
+  var machEl = null;
+  var machBar = null;
+  var machDot = null;
+  var machAge = null;
+  var machTimer = null;
+  var machRequest = null;
+  var machParts = null;
+  var machSel = null;
+  var machKindSel = "all";
+  var machCtl = null;
+  var machEditEl = null;
+  var machPend = {};
+  var MACH_STATES = { watching: "live", holding: "live", buying: "live", selling: "live",
+    connecting: "stale", starting: "stale", paused: "", stopped: "dead" };
+
+  function fmtMachNet(v) {
+    var s = Math.abs(v).toFixed(5).replace(/0+$/, "").replace(/\.$/, "");
+    return (v > 0 ? "+" : v < 0 ? "-" : "") + s;
+  }
+
+  function fmtMachUp(s) {
+    return s >= 86400 ? Math.floor(s / 86400) + "d " + Math.floor(s % 86400 / 3600) + "h"
+      : s >= 3600 ? Math.floor(s / 3600) + "h " + Math.floor(s % 3600 / 60) + "m"
+        : s >= 60 ? Math.floor(s / 60) + "m " + s % 60 + "s" : s + "s";
+  }
+
+  function machKey(r) { return r.name + "|" + r.sym; }
+
+  function machKind(r) { return r.name.split("-")[0]; }
+
+  function machWord(text) { return text.charAt(0).toUpperCase() + text.slice(1); }
+
+  function machRunners() {
+    return machData ? machData.runners || [] : [];
+  }
+
+  function machRunner() {
+    return machRunners().filter(function (r) { return machKey(r) === machSel; })[0] || null;
+  }
+
+  function machName() {
+    var r = machRunner();
+    return r ? r.name : "cycle-usdc";
+  }
+
+  function machPost(body, name) {
+    body.name = name || machName();
+    fetch("/api/machine", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        return r.json();
+      })
+      .then(function () { fetchMachControl(); fetchMachine(true); })
+      .catch(function () { /* the runner shows the truth on the next poll */ });
+  }
+
+  function fetchMachControl() {
+    fetch("/api/machine", { headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      })
+      .then(function (d) { machCtl = d; paintMachine(); })
+      .catch(function () { /* shown once the file answers */ });
+  }
+
+  function fetchMachine(force) {
+    if (!machEl || machRequest) { return; }
+    if (force !== true && document.hidden) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    machRequest = request;
+    fetch("/machine.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (r.status === 404) { return null; }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (machRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        machRequest = null;
+        if (!machEl) { return; }
+        machOk = true;
+        machData = d;
+        paintMachine();
+      }).catch(function () {
+        if (machRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        machRequest = null;
+        if (!machEl) { return; }
+        machOk = false;
+        drawMachStatus();
+      });
+  }
+
+  function drawMachStatus() {
+    if (!machDot) { return; }
+    var runners = machRunners();
+    var rest = runners.length > 0 && runners.every(function (r) { return r.state === "stopped"; });
+    var stale = !machData || Date.now() - machData.at > 10000;
+    machDot.className = "status-dot "
+      + (!machOk ? "dead" : !machData ? "" : rest ? "" : stale ? "stale" : "live");
+    machAge.textContent = !machOk ? "Offline" : !machData ? "" : rest ? "Stopped" : stale ? "Stale" : "Live";
+  }
+
+  function closeMachEdit() {
+    if (!machEditEl) { return; }
+    document.removeEventListener("keydown", machEditEl.onKey);
+    machEditEl.dim.remove();
+    machEditEl.card.remove();
+    machEditEl = null;
+  }
+
+  function machEdit(key) {
+    closeMachEdit();
+    var r = machRunner();
+    var base = r ? r.base : "tokens";
+    var meta = {
+      qty: ["Trade size", "Tokens bought and sold each cycle. Must fit the pair's lot step.",
+        { after: base }],
+      allow: ["Max loss", "Buying stops when the total loss reaches this many USDT. 0 switches the guard off.",
+        { after: "USDT" }],
+      days: ["Max days", "The machine stops itself after this many days. 0 runs forever.",
+        { int: true, after: "days" }],
+      vol: ["Max volume", "Buying stops after this much bought and sold volume in USDT. 0 is no limit.",
+        { int: true, after: "USDT" }]
+    }[key];
+    var cur = r ? r[key] : machCtl && machCtl[machName()] ? machCtl[machName()][key] : undefined;
+    var dim = el("div", "qsearch-dim");
+    var card = el("div", "law-pop");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-label", meta[0]);
+    card.appendChild(el("div", "law-pop-title", meta[0]));
+    card.appendChild(el("div", "law-pop-sub", meta[1]));
+    var made = lawNumberInput(cur === undefined ? "" : cur, meta[2]);
+    card.appendChild(made.line);
+    var err = el("div", "law-error");
+    err.style.marginTop = "10px";
+    card.appendChild(err);
+    var foot = el("div", "law-pop-foot");
+    foot.appendChild(button("Cancel", "set-action", closeMachEdit));
+    foot.appendChild(button("Save", "set-action law-apply-go", function () {
+      var p = lawParse(made.input, meta[2]);
+      if (p.fail) { err.textContent = p.fail; return; }
+      var body = {};
+      body[key] = p.value === null ? 0 : p.value;
+      machPost(body);
+      closeMachEdit();
+    }));
+    card.appendChild(foot);
+    dim.addEventListener("mousedown", closeMachEdit);
+    var onKey = function (ev) { if (ev.key === "Escape") { closeMachEdit(); } };
+    document.addEventListener("keydown", onKey);
+    machEditEl = { dim: dim, card: card, onKey: onKey };
+    document.body.appendChild(dim);
+    document.body.appendChild(card);
+    made.input.focus();
+    made.input.select();
+  }
+
+  function machPend2(key, actual) {
+    var p = machPend[key];
+    if (!p) { return actual; }
+    if (p[0] === actual || Date.now() > p[1]) { delete machPend[key]; return actual; }
+    return p[0];
+  }
+
+  function machRowEl(r) {
+    var row = el("div", "mkt-row");
+    row.dataset.key = machKey(r);
+    row.appendChild(el("span", "mkt-rank", ""));
+    var tok = el("span", "news-source");
+    tok.appendChild(tokenBadge(r.base));
+    var col = tok.appendChild(el("span", "news-source-col"));
+    col.appendChild(el("span", "news-source-name", r.base));
+    row.sub = col.appendChild(el("span", "news-domain"));
+    row.appendChild(tok);
+    var state = row.appendChild(el("span", "status"));
+    row.dot = state.appendChild(el("i", "status-dot"));
+    row.word = state.appendChild(el("span"));
+    row.act = row.appendChild(el("span", "logs-msg"));
+    row.cyc = row.appendChild(el("span", "mkt-num"));
+    row.net = row.appendChild(el("span", "mkt-num"));
+    var allow = row.appendChild(el("span", "mach-allow"));
+    row.meter = allow.appendChild(acctMeter(0, "var(--focus)"));
+    row.left = allow.appendChild(el("span", "news-count"));
+    var act = row.appendChild(el("span", "mach-switch"));
+    row.sw = el("button", "set-switch");
+    row.sw.setAttribute("role", "switch");
+    row.sw.setAttribute("aria-label", "Trading " + r.base);
+    row.sw.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (row.runner && row.runner.mode === "run" && row.runner.state !== "stopped") {
+        var want = !row.sw.classList.contains("on");
+        machPend["trade|" + machKey(r)] = [want, Date.now() + 6000];
+        machPost({ trade: want }, row.runner.name);
+        paintMachine();
+      }
+    });
+    act.appendChild(row.sw);
+    row.addEventListener("click", function () {
+      machSel = machKey(r);
+      machPend = {};
+      paintMachine();
+    });
+    return row;
+  }
+
+  function machRowUpdate(r, rank) {
+    var key = machKey(r);
+    var row = machParts.rows[key] || (machParts.rows[key] = machRowEl(r));
+    row.runner = r;
+    row.firstChild.textContent = String(rank);
+    row.classList.toggle("mach-sel", machSel === key);
+    var sub = r.sym + " · " + (r.mode === "watch" ? "watch only"
+      : fmtQty(r.qty) + " " + r.base + " per cycle");
+    if (row.sub.textContent !== sub) { row.sub.textContent = sub; }
+    var gone = machData && Date.now() - machData.at > 10000;
+    var dot = "status-dot " + (gone && r.state !== "stopped" ? "stale" : MACH_STATES[r.state] || "");
+    if (row.dot.className !== dot) { row.dot.className = dot; }
+    var word = machWord(r.state);
+    if (row.word.textContent !== word) { row.word.textContent = word; }
+    if (row.act.textContent !== r.act) { row.act.textContent = r.act; row.act.title = r.act; }
+    if (row.cyc.textContent !== String(r.cycles)) { row.cyc.textContent = String(r.cycles); }
+    var net = fmtMachNet(r.net);
+    var netCls = "mkt-num" + (r.net > 0 ? " up" : r.net < 0 ? " down" : "");
+    if (row.net.textContent !== net) { row.net.textContent = net; }
+    if (row.net.className !== netCls) { row.net.className = netCls; }
+    var used = Math.max(0, -r.net);
+    row.meter.firstChild.style.width = Math.round(Math.min(1, r.allow ? used / r.allow : 0) * 100) + "%";
+    row.meter.firstChild.style.background = r.block ? "#cc2f3c" : "var(--focus)";
+    var left = used.toFixed(3) + " of " + fmtQty(r.allow);
+    if (row.left.textContent !== left) { row.left.textContent = left; }
+    var trading = machPend2("trade|" + key, !!r.trade);
+    row.sw.classList.toggle("on", trading);
+    row.sw.setAttribute("aria-checked", trading ? "true" : "false");
+    row.sw.disabled = r.mode !== "run" || r.state === "stopped";
+    return row;
+  }
+
+  function drawMachine() {
+    if (!machEl) { return; }
+    drawMachStatus();
+    machEl.textContent = "";
+    machBar.textContent = "";
+    var runners = machRunners();
+    if (!machRunner()) { machSel = runners.length ? machKey(runners[0]) : null; }
+    var kinds = [];
+    runners.forEach(function (r) {
+      if (kinds.indexOf(machKind(r)) === -1) { kinds.push(machKind(r)); }
+    });
+    if (machKindSel !== "all" && kinds.indexOf(machKindSel) === -1) { machKindSel = "all"; }
+    [["all", "All"]].concat(kinds.map(function (k) { return [k, machWord(k)]; }))
+      .forEach(function (def) {
+        var b = el("button", "news-pill" + (machKindSel === def[0] ? " on" : ""));
+        b.appendChild(icon(def[0] === "all" ? "all" : "spread"));
+        b.appendChild(document.createTextNode(def[1]));
+        var n = def[0] === "all" ? runners.length
+          : runners.filter(function (r) { return machKind(r) === def[0]; }).length;
+        b.appendChild(el("span", "news-count", String(n)));
+        b.addEventListener("click", function () { machKindSel = def[0]; drawMachine(); });
+        machBar.appendChild(b);
+      });
+
+    var parts = { rows: {}, keys: runners.map(machKey).join(",") };
+    var cols = el("div", "news-cols");
+    var main = el("div", "news-main");
+
+    var list = el("div", "news-list");
+    var headRow = el("div", "mkt-row news-head-row");
+    headRow.appendChild(el("span", "mkt-rank", "#"));
+    ["Runner", "State", "Doing now", "Cycles", "Net USDT", "Allowance", "Trade"].forEach(function (c) {
+      headRow.appendChild(el("span", "", c));
+    });
+    list.appendChild(headRow);
+    parts.body = list.appendChild(el("div"));
+    main.appendChild(list);
+    parts.empty = main.appendChild(el("div", "news-empty",
+      "No machine running — start one on the host: python3 machine.py run USDCUSDT 6 1"));
+
+    var d = el("div", "mach-detail");
+    var dhead = d.appendChild(el("div", "mach-detail-head"));
+    parts.dBadge = dhead.appendChild(el("span"));
+    var dcol = dhead.appendChild(el("span", "news-source-col"));
+    parts.dName = dcol.appendChild(el("span", "news-source-name"));
+    parts.dSub = dcol.appendChild(el("span", "news-domain"));
+    parts.dState = dhead.appendChild(el("span", "logs-pop-time"));
+    var acts = d.appendChild(el("div", "mach-acts"));
+    acts.appendChild(el("span", "set-status", "Trading"));
+    parts.trade = acts.appendChild(el("button", "set-switch"));
+    parts.trade.setAttribute("role", "switch");
+    parts.trade.setAttribute("aria-label", "Trading");
+    parts.trade.addEventListener("click", function () {
+      var r = machRunner();
+      if (r && r.mode === "run" && r.state !== "stopped") {
+        var want = !parts.trade.classList.contains("on");
+        machPend["trade|" + machKey(r)] = [want, Date.now() + 6000];
+        machPost({ trade: want });
+        paintMachine();
+      }
+    });
+    acts.appendChild(el("span", "set-status", "Pause"));
+    parts.pause = acts.appendChild(el("button", "set-switch"));
+    parts.pause.setAttribute("role", "switch");
+    parts.pause.setAttribute("aria-label", "Pause");
+    parts.pause.addEventListener("click", function () {
+      var r = machRunner();
+      if (r && r.state !== "stopped") {
+        var want = !parts.pause.classList.contains("on");
+        machPend["pause|" + machKey(r)] = [want, Date.now() + 6000];
+        machPost({ pause: want });
+        paintMachine();
+      }
+    });
+    acts.appendChild(el("span", "mach-space"));
+    parts.sell = acts.appendChild(button("Sell now", "set-action", function () {
+      machPost({ sell: true });
+    }));
+    parts.sell.setAttribute("data-tip", "Sell what this machine holds back at market");
+    parts.stop = acts.appendChild(button("Stop", "set-action dev-kick", function () {
+      if (parts.stop.textContent !== "Stop?") { parts.stop.textContent = "Stop?"; return; }
+      parts.stop.textContent = "Stop";
+      machPost({ stop: true });
+    }));
+    parts.stop.setAttribute("data-tip", "Sell back and exit; restart only from the host");
+    var halves = d.appendChild(el("div", "mach-halves"));
+    var mind = halves.appendChild(el("div", "mach-mind"));
+    var now = mind.appendChild(el("div", "mach-now"));
+    parts.dot = now.appendChild(el("i", "status-dot"));
+    parts.act = now.appendChild(el("span", "mach-now-text"));
+    parts.facts = mind.appendChild(el("div", "mach-facts"));
+    parts.log = mind.appendChild(el("div", "mach-log"));
+    parts.props = halves.appendChild(el("div", "mach-props"));
+    parts.vals = {};
+    [["qty", "Trade size"], ["allow", "Max loss"], ["days", "Max days"], ["vol", "Max volume"]]
+      .forEach(function (def) {
+        var line = el("div", "news-source-row");
+        line.appendChild(el("span", "news-source-name", def[1]));
+        parts.vals[def[0]] = line.appendChild(el("span", "law-value"));
+        line.appendChild(lawEditButton(function () { machEdit(def[0]); }));
+        parts.props.appendChild(line);
+      });
+    parts.stats = parts.props.appendChild(el("div"));
+    parts.detail = d;
+    parts.drawn = 0;
+    main.appendChild(d);
+    cols.appendChild(main);
+
+    var side = el("div", "news-side");
+    function chip(name, boxEl) {
+      var b = boxEl.querySelector(".news-box-head b");
+      b.insertBefore(icon(name), b.firstChild);
+      side.appendChild(boxEl);
+      return boxEl;
+    }
+    var fleet = chip("breadth", box("Machines"));
+    parts.uRun = acctStat(fleet, "Running", "");
+    parts.uNet = acctStat(fleet, "Net", "");
+    parts.uFees = acctStat(fleet, "Fees", "");
+    parts.uTraded = acctStat(fleet, "Traded", "");
+    var uc = chip("shield", box("Controls", "every machine"));
+    var line = el("div", "news-source-row");
+    line.appendChild(el("span", "news-source-name", "Trading"));
+    parts.uTrade = line.appendChild(el("button", "set-switch"));
+    parts.uTrade.setAttribute("role", "switch");
+    parts.uTrade.setAttribute("aria-label", "Trading on every machine");
+    parts.uTrade.addEventListener("click", function () {
+      var on = machRunners().filter(function (r) {
+        return r.mode === "run" && r.state !== "stopped";
+      });
+      if (!on.length) { return; }
+      var want = !parts.uTrade.classList.contains("on");
+      machPend.tradeAll = [want, Date.now() + 6000];
+      on.forEach(function (r) { machPost({ trade: want }, r.name); });
+      paintMachine();
+    });
+    uc.appendChild(line);
+    line = el("div", "news-source-row");
+    line.appendChild(el("span", "news-source-name", "Pause"));
+    parts.uPause = line.appendChild(el("button", "set-switch"));
+    parts.uPause.setAttribute("role", "switch");
+    parts.uPause.setAttribute("aria-label", "Pause every machine");
+    parts.uPause.addEventListener("click", function () {
+      var on = machRunners().filter(function (r) { return r.state !== "stopped"; });
+      if (!on.length) { return; }
+      var want = !parts.uPause.classList.contains("on");
+      machPend.pauseAll = [want, Date.now() + 6000];
+      on.forEach(function (r) { machPost({ pause: want }, r.name); });
+      paintMachine();
+    });
+    uc.appendChild(line);
+    line = el("div", "news-source-row");
+    line.appendChild(el("span", "news-source-name", "Machines"));
+    parts.uStop = line.appendChild(button("Stop all", "set-action dev-kick", function () {
+      if (parts.uStop.textContent !== "Stop all?") { parts.uStop.textContent = "Stop all?"; return; }
+      parts.uStop.textContent = "Stop all";
+      machRunners().forEach(function (r) {
+        if (r.state !== "stopped") { machPost({ stop: true }, r.name); }
+      });
+    }));
+    parts.uStop.setAttribute("data-tip", "Every machine sells back and exits");
+    uc.appendChild(line);
+    cols.appendChild(side);
+    machEl.appendChild(cols);
+    machParts = parts;
+    paintMachine();
+  }
+
+  function paintMachine() {
+    if (!machEl) { return; }
+    var runners = machRunners();
+    if (!machParts || machParts.keys !== runners.map(machKey).join(",")) { drawMachine(); return; }
+    var parts = machParts;
+    var shown = runners.filter(function (r) {
+      return machKindSel === "all" || machKind(r) === machKindSel;
+    });
+    var keep = {};
+    shown.forEach(function (r, i) {
+      keep[machKey(r)] = true;
+      var row = machRowUpdate(r, i + 1);
+      if (parts.body.children[i] !== row) {
+        parts.body.insertBefore(row, parts.body.children[i] || null);
+      }
+    });
+    Object.keys(parts.rows).forEach(function (key) {
+      if (!keep[key]) {
+        parts.rows[key].remove();
+        delete parts.rows[key];
+      }
+    });
+    parts.empty.hidden = runners.length > 0;
+
+    var r = machRunner();
+    parts.detail.hidden = !r;
+    if (r) {
+      if (parts.dBadge.dataset.base !== r.base) {
+        parts.dBadge.textContent = "";
+        parts.dBadge.appendChild(tokenBadge(r.base));
+        parts.dBadge.dataset.base = r.base;
+        parts.drawn = 0;
+      }
+      parts.dName.textContent = r.base;
+      var started = new Date(r.started);
+      parts.dSub.textContent = machWord(machKind(r)) + " · " + r.sym + " · " + r.mode
+        + " · pid " + r.pid + " · started " + dateFmt.format(started) + " " + timeFmt.format(started);
+      var up = fmtMachUp(Math.max(0, Math.round((machData.at - r.started) / 1000)));
+      parts.dState.textContent = machWord(r.state) + " · up " + up;
+      var gone = machData && Date.now() - machData.at > 10000;
+      var cls = "status-dot " + (gone && r.state !== "stopped" ? "stale" : MACH_STATES[r.state] || "");
+      if (parts.dot.className !== cls) { parts.dot.className = cls; }
+      if (parts.act.textContent !== r.act) { parts.act.textContent = r.act; }
+      var facts = (r.ticks !== undefined ? r.ticks + " ticks · " : "") + "cycles " + r.cycles
+        + " · net " + fmtMachNet(r.net) + " USDT" + (r.block ? " · " + r.block : "");
+      if (parts.facts.textContent !== facts) { parts.facts.textContent = facts; }
+      var was = parts.log.scrollTop;
+      var atEnd = parts.log.scrollHeight - was - parts.log.clientHeight < 30;
+      parts.log.textContent = "";
+      (r.log || []).forEach(function (e) {
+        var line = el("div", "mach-line " + e.k);
+        line.appendChild(el("span", "mach-time", hoverTimeFmt.format(new Date(e.t))));
+        line.appendChild(el("i", "mach-dot"));
+        line.appendChild(el("span", "mach-x", e.x));
+        parts.log.appendChild(line);
+      });
+      parts.log.scrollTop = atEnd || !parts.drawn ? parts.log.scrollHeight : was;
+      parts.drawn = 1;
+      var live = r.state !== "stopped";
+      var trading = machPend2("trade|" + machKey(r), !!r.trade);
+      parts.trade.classList.toggle("on", trading);
+      parts.trade.setAttribute("aria-checked", trading ? "true" : "false");
+      parts.trade.disabled = !live || r.mode !== "run";
+      var paused = machPend2("pause|" + machKey(r), !!r.paused);
+      parts.pause.classList.toggle("on", paused);
+      parts.pause.setAttribute("aria-checked", paused ? "true" : "false");
+      parts.pause.disabled = !live;
+      parts.sell.disabled = !live || !r.entry;
+      parts.stop.disabled = !live;
+      var show = { qty: r.qty ? fmtQty(r.qty) + " " + r.base : "—",
+        allow: r.allow ? fmtQty(r.allow) + " USDT" : "none",
+        days: r.days ? fmtQty(r.days) + " days" : "none",
+        vol: r.vol ? fmtQty(r.vol) + " USDT" : "none" };
+      ["qty", "allow", "days", "vol"].forEach(function (key) {
+        if (parts.vals[key].textContent !== show[key]) { parts.vals[key].textContent = show[key]; }
+      });
+      parts.stats.textContent = "";
+      var pairs = [];
+      if (r.bid || r.ask) { pairs.push(["Book", (r.bid || "—") + " / " + (r.ask || "—")]); }
+      if (r.ref) { pairs.push(["Reference", r.ref]); }
+      if (r.rule) { pairs.push(["Rule", r.rule]); }
+      pairs.push(["Traded", Math.round(r.traded) + " USDT"], ["Fees", fmtQty(r.fees) + " USDT"]);
+      if (r.entry) { pairs.push(["Entry", r.entry + " · holding " + fmtQty(r.qty) + " " + r.base]); }
+      pairs.forEach(function (p) { acctStat(parts.stats, p[0], p[1]); });
+    }
+
+    var running = runners.filter(function (x) { return x.state !== "stopped"; });
+    var runlive = running.filter(function (x) { return x.mode === "run"; });
+    var sums = { net: 0, fees: 0, traded: 0 };
+    runners.forEach(function (x) {
+      sums.net += x.net;
+      sums.fees += x.fees;
+      sums.traded += x.traded;
+    });
+    parts.uRun.lastChild.textContent = running.length + " of " + runners.length;
+    parts.uNet.lastChild.textContent = fmtMachNet(sums.net) + " USDT";
+    parts.uNet.lastChild.className = "news-count" + (sums.net > 0 ? " up" : sums.net < 0 ? " down" : "");
+    parts.uFees.lastChild.textContent = fmtQty(sums.fees) + " USDT";
+    parts.uTraded.lastChild.textContent = Math.round(sums.traded) + " USDT";
+    var tradeAll = machPend2("tradeAll", runlive.length > 0 && runlive.every(function (x) { return x.trade; }));
+    parts.uTrade.classList.toggle("on", tradeAll);
+    parts.uTrade.setAttribute("aria-checked", tradeAll ? "true" : "false");
+    parts.uTrade.disabled = !runlive.length;
+    var pauseAll = machPend2("pauseAll", running.length > 0 && running.every(function (x) { return x.paused; }));
+    parts.uPause.classList.toggle("on", pauseAll);
+    parts.uPause.setAttribute("aria-checked", pauseAll ? "true" : "false");
+    parts.uPause.disabled = !running.length;
+    parts.uStop.disabled = !running.length;
+    drawMachStatus();
+  }
+
+  function buildMachine(page, head) {
+    page.classList.add("machine");
+    var acts = el("div", "set-actions news-acts");
+    acts.appendChild(refreshButton(function () { fetchMachine(true); fetchMachControl(); }));
+    var live = acts.appendChild(el("span", "status"));
+    machDot = live.appendChild(el("i", "status-dot"));
+    machAge = live.appendChild(el("span"));
+    head.appendChild(acts);
+    machBar = page.appendChild(el("div", "news-pills"));
+    machEl = page.appendChild(el("div"));
+    drawMachine();
+    fetchMachine(true);
+    fetchMachControl();
+    machTimer = setInterval(fetchMachine, 1000);
+  }
+
+  /* ---- volume: the scanner's one file, top 20 real movers ---- */
+  var volEl = null;
+  var volBar = null;
+  var volTimer = null;
+  var volRequest = null;
+  var volData = null;
+  var volOk = true;
+  var volDot = null;
+  var volAge = null;
+  var volPaint = null;
+  var volSwitch = null;
+  var volOn = true;
+  var volTick = 0;
+  var volCat = "all";
+  var VOL_CATS = [["all", "All"], ["spot", "Spot only"], ["fut", "Futures only"]];
+
+  function volKey(r) { return r.sym + ":" + r.since; }
+
+  function volDur(ms) {
+    var m = Math.max(0, Math.round(ms / 60000));
+    return m >= 60 ? Math.floor(m / 60) + "h " + (m % 60) + "m" : m + "m";
+  }
+
+  function volState(r) {
+    if (r.state === "building" || r.state === "second leg") {
+      return r.state + " " + volDur(Date.now() - r.since);
+    }
+    if (r.state === "cooling") { return "cooling " + r.cool + "m"; }
+    if (r.state === "faded") { return "faded " + hoverTimeFmt.format(new Date(r.end)); }
+    return r.state;
+  }
+
+  function volSub(r) {
+    var sub = r.cat === "both"
+      ? "spot + futures" + (r.fs === undefined ? "" : " · F/S " + r.fs.toFixed(1))
+      : r.cat === "spot" ? "spot only" : "futures only";
+    if (r.mult) { sub += " · ×" + r.mult; }
+    return sub;
+  }
+
+  function volTexts(r) {
+    return [fmtVol(r.v5), fmtVol(r.v1), fmtVol(r.v2), fmtVol(r.v24),
+      (r.x >= 100 ? String(Math.round(r.x)) : r.x.toFixed(1)) + "×",
+      r.tpm >= 100 ? String(Math.round(r.tpm)) : r.tpm.toFixed(1),
+      Math.round(r.buy * 100) + "%",
+      fmtSigned(r.move, 2),
+      volState(r)];
+  }
+
+  function volRow(r) {
+    var row = el("div", "mkt-row");
+    row.dataset.key = volKey(r);
+    row.appendChild(el("span", "mkt-rank", ""));
+    var tok = el("span", "news-source");
+    tok.appendChild(tokenBadge(tokenName(r)));
+    var col = tok.appendChild(el("span", "news-source-col"));
+    col.appendChild(el("span", "news-source-name", tokenName(r)));
+    row.sub = col.appendChild(el("span", "news-domain", ""));
+    row.appendChild(tok);
+    row.texts = [];
+    for (var ci = 0; ci < 9; ci += 1) {
+      var cell = el("span", "mkt-num");
+      var tn = document.createTextNode("");
+      cell.appendChild(tn);
+      row.appendChild(cell);
+      row.texts.push(tn);
+    }
+    row.moveCell = row.children[9];
+    row.stateCell = row.children[10];
+    return row;
+  }
+
+  function volRowUpdate(r, rank) {
+    var row = volPaint.rows[volKey(r)] || (volPaint.rows[volKey(r)] = volRow(r));
+    row.firstChild.textContent = String(rank);
+    volTexts(r).forEach(function (t, i) {
+      if (row.texts[i].nodeValue !== t) { row.texts[i].nodeValue = t; }
+    });
+    var sub = volSub(r);
+    if (row.sub.textContent !== sub) { row.sub.textContent = sub; }
+    var mv = "mkt-num" + (r.move > 0 ? " up" : r.move < 0 ? " down" : "");
+    if (row.moveCell.className !== mv) { row.moveCell.className = mv; }
+    var st = "mkt-num" + (r.live && (r.state === "building" || r.state === "second leg") ? " up" : "");
+    if (row.stateCell.className !== st) { row.stateCell.className = st; }
+    if (row.stateCell.getAttribute("data-tip") !== r.why) { row.stateCell.setAttribute("data-tip", r.why); }
+    return row;
+  }
+
+  function drawVolStatus() {
+    if (!volDot) { return; }
+    if (!volOn) {
+      volDot.className = "status-dot";
+      volAge.textContent = "Off";
+      return;
+    }
+    var stale = !volData || Date.now() - volData.at > 30000;
+    volDot.className = "status-dot " + (!volOk ? "dead" : !volData ? "" : stale ? "stale" : "live");
+    volAge.textContent = !volOk ? "Offline" : !volData ? "" : stale ? "Stale" : "Live";
+  }
+
+  function drawVolSwitch() {
+    if (!volSwitch) { return; }
+    volSwitch.classList.toggle("on", volOn);
+    volSwitch.setAttribute("aria-checked", volOn ? "true" : "false");
+    volEl.classList.toggle("off", !volOn);
+    drawVolStatus();
+  }
+
+  function volFeed(on) {
+    feedState("/api/volume", on, function (v) {
+      volOn = v;
+      drawVolSwitch();
+      if (v) { fetchVolume(true); }
+    });
+  }
+
+  function drawVolume() {
+    if (!volEl) { return; }
+    volEl.textContent = "";
+    volBar.textContent = "";
+    VOL_CATS.forEach(function (c) {
+      var b = el("button", "news-pill" + (volCat === c[0] ? " on" : ""));
+      b.appendChild(icon(c[0]));
+      b.appendChild(document.createTextNode(c[1]));
+      b.addEventListener("click", function () { volCat = c[0]; drawVolume(); });
+      volBar.appendChild(b);
+    });
+    volEl.appendChild(el("div", "basis-cap",
+      "Every USDT token on spot and futures, scanned live · usual hour = (24h − last hour) / 23, "
+      + "a hot minute is 4× the usual minute · positive runners only, ranked by what reads real: "
+      + "build time, buyers, trade crowd, price follow, both venues, futures interest · one-print, "
+      + "same-size, flat churn and few-trade volume is dropped · top 20 only"));
+    var list = el("div", "news-list");
+    var headRow = el("div", "mkt-row news-head-row");
+    headRow.appendChild(el("span", "mkt-rank", "#"));
+    ["Token", "5m", "1h", "2h", "24h", "× usual", "Trades /m", "Buyers", "Move", "State"].forEach(function (c) {
+      headRow.appendChild(el("span", "mkt-head", c));
+    });
+    list.appendChild(headRow);
+    var body = list.appendChild(el("div"));
+    var note = list.appendChild(el("div", "news-empty", "No live volume signal right now."));
+    volPaint = { body: body, note: note, rows: {} };
+    volEl.appendChild(list);
+    if (volData) { paintVolume(); }
+    drawVolStatus();
+  }
+
+  function paintVolume() {
+    if (!volEl || !volData) { return; }
+    if (!volPaint) { drawVolume(); return; }
+    var rows = (volData.rows || []).filter(function (r) {
+      return volCat === "all" || r.cat === volCat;
+    }).slice(0, 20);
+    var body = volPaint.body;
+    var first = {};
+    Array.prototype.forEach.call(body.children, function (n) {
+      first[n.dataset.key] = n.getBoundingClientRect().top;
+    });
+    var keep = {};
+    rows.forEach(function (r, i) {
+      keep[volKey(r)] = true;
+      var row = volRowUpdate(r, i + 1);
+      if (body.children[i] !== row) { body.insertBefore(row, body.children[i] || null); }
+    });
+    Object.keys(volPaint.rows).forEach(function (key) {
+      if (!keep[key]) {
+        volPaint.rows[key].remove();
+        delete volPaint.rows[key];
+      }
+    });
+    Array.prototype.forEach.call(body.children, function (n) {
+      var was = first[n.dataset.key];
+      if (was === undefined) {
+        n.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: "ease" });
+        return;
+      }
+      var d = was - n.getBoundingClientRect().top;
+      if (d) { n.animate([{ transform: "translateY(" + d + "px)" }, { transform: "none" }], { duration: 260, easing: "ease" }); }
+    });
+    volPaint.note.hidden = rows.length > 0;
+    drawVolStatus();
+  }
+
+  function fetchVolume(force) {
+    if (!volEl || volRequest) { return; }
+    if (force !== true && (!volOn || document.hidden)) { return; }
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: setTimeout(function () { controller.abort(); }, 12000) };
+    volRequest = request;
+    fetch("/volume.json", { signal: controller.signal, headers: { "X-Requested-With": "XMLHttpRequest" } })
+      .then(function (r) {
+        if (r.status === 401) { location.reload(); }
+        if (!r.ok) { throw new Error(r.status); }
+        return r.json();
+      }).then(function (d) {
+        if (volRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        volRequest = null;
+        if (!volEl) { return; }
+        volOk = true;
+        volData = d;
+        paintVolume();
+      }).catch(function () {
+        if (volRequest !== request) { return; }
+        clearTimeout(request.timeout);
+        volRequest = null;
+        if (!volEl) { return; }
+        volOk = false;
+        drawVolStatus();
+      });
+  }
+
+  function buildVolume(page, head) {
+    page.classList.add("volume");
+    var acts = el("div", "set-actions");
+    acts.appendChild(refreshButton(function () { fetchVolume(true); }));
+    volSwitch = el("button", "set-switch");
+    volSwitch.setAttribute("role", "switch");
+    volSwitch.setAttribute("aria-label", "Volume scan on or off");
+    volSwitch.addEventListener("click", function () { volFeed(!volOn); });
+    acts.appendChild(volSwitch);
+    var live = acts.appendChild(el("span", "status"));
+    volDot = live.appendChild(el("i", "status-dot"));
+    volAge = live.appendChild(el("span"));
+    head.appendChild(acts);
+    volBar = page.appendChild(el("div", "news-pills"));
+    volEl = page.appendChild(el("div", "volume-list"));
+    drawVolume();
+    drawVolSwitch();
+    fetchVolume(true);
+    volFeed();
+    volTimer = setInterval(function () {
+      volTick = (volTick + 1) % 60;
+      if (!volTick) { volFeed(); }
+      fetchVolume();
+    }, 1000);
   }
 
   /* ---- network: the probe's one file, one graph at a time ---- */
@@ -4880,6 +6116,10 @@
     if (!document.hidden && logsEl) {
       fetchLogs();
       if (logsSync) { feedState("/api/logs", undefined, logsSync); }
+    }
+    if (!document.hidden && basisEl) {
+      fetchBasis();
+      if (basisSync) { feedState("/api/basis", undefined, basisSync); }
     }
     if (!document.hidden && newsEl) { newsState(); }
   });

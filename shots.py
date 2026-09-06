@@ -7,10 +7,12 @@
 # half the four-leg cost; fund = the books closed back after the perp's next funding settlement, read at entry.
 # Every line carries Binance's own timestamps. One shot at a time; stops after the shot count or the time window.
 #   python3 shots.py 5 20 600 close 60      five shots, 20 USDT a leg, within 600 s, exit rule close, max hold 60 s
+#   python3 shots.py tab 20 close 60        runs on: feeds the Basis tab every second with a paper twin of every crossing
+#                                           it would fire on, and fires for real only while the tab's switch is on
 import asyncio
 import hashlib
 import hmac
-import re
+import os
 import sys
 import time
 import urllib.request
@@ -22,11 +24,19 @@ from picows import WSListener, WSMsgType, ws_connect
 
 from binance import API_KEY, API_SECRET, FAPI, SPOT, get
 
-shots_wanted = int(sys.argv[1]) if len(sys.argv) > 1 else 5
-leg = Decimal(sys.argv[2]) if len(sys.argv) > 2 else Decimal(20)
-window = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
-rule = sys.argv[4] if len(sys.argv) > 4 else "close"
-hold_max = float(sys.argv[5]) if len(sys.argv) > 5 else 60.0
+tab = len(sys.argv) > 1 and sys.argv[1] == "tab"
+if tab:
+    shots_wanted, window = 10 ** 9, float("inf")
+    leg = Decimal(sys.argv[2]) if len(sys.argv) > 2 else Decimal(20)
+    rule = sys.argv[3] if len(sys.argv) > 3 else "close"
+    hold_max = float(sys.argv[4]) if len(sys.argv) > 4 else 60.0
+else:
+    shots_wanted = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+    leg = Decimal(sys.argv[2]) if len(sys.argv) > 2 else Decimal(20)
+    window = float(sys.argv[3]) if len(sys.argv) > 3 else 600.0
+    rule = sys.argv[4] if len(sys.argv) > 4 else "close"
+    hold_max = float(sys.argv[5]) if len(sys.argv) > 5 else 60.0
+switch, board, memory = "/var/lib/trader-basis-control/enabled", "/var/lib/trader-board/events.json", "/home/ssm-user/tab.json"
 if rule not in ("close", "edge", "fund"):
     sys.exit(f"exit rule {rule}: use close, edge or fund")
 confirm = 0.002
@@ -63,6 +73,8 @@ for sym, s in spot_info.items():
         pairs[sym] = {"step": step, "sb": 0.0, "sa": 0.0, "sB": 0.0, "sA": 0.0, "fb": 0.0, "fa": 0.0, "fB": 0.0, "fA": 0.0,
                       "sa_s": "", "fb_s": "", "su": 0, "fu": 0, "E": 0, "T": 0, "armed": None, "timer": None, "rate": rates.get(sym, 0.0)}
 state = {"busy": False, "shots": 0, "held": {}, "net": 0.0, "funding": 0.0, "fees": 0.0, "done": False}
+paper, closed, live = {}, [], {"spot": 0, "fut": 0}   # paper twins by coin, closed rows newest first, feed connections up
+today = {"date": time.strftime("%Y-%m-%d", time.gmtime()), "closed": {"n": 0, "r": 0}, "made": {"n": 0.0, "r": 0.0}}  # n real, r paper
 lanes = {"spot": "wss://ws-api.binance.com:443/ws-api/v3?timeUnit=MICROSECOND", "fut": "wss://ws-fapi.binance.com/ws-fapi/v1"}
 feeds = {"spot": "wss://stream.binance.com:9443/ws", "fut": "wss://fstream.binance.com/public/ws"}
 lane = {}
@@ -177,9 +189,63 @@ async def order(venue, sym, side, qty, price=None, closing=False):
     return q, usdt, fee, stamp, (seen - sent) / 1e6, r.get("orderId")
 
 
+def trading():
+    try:
+        return open(switch).read().strip() == "1"
+    except OSError:
+        return False
+
+
+def row_for(sym, p, size, real):
+    gap = (p["fb"] / p["sa"] - 1) * 100
+    return {"t": clock() // 1000000, "sym": sym, "side": "n", "taken": clock() // 1000000, "gap": gap, "net": gap - cost * 100,
+            "size": size, "qty": 0, "spot": p["sa"], "fut": p["fb"], "now": gap, "fund": 0.0, "cost": 0.0, "made": None,
+            "held": None, "lots": 1, "borrow": 0.0, "real": real, "since": time.time(), "entry": p["fb"] / p["sa"] - 1}
+
+
+def mark(r, p):
+    # the row's value if closed on the books now, as a percent of its size: entry edge plus the exit edge minus the fees
+    if p["sa"] and p["fa"]:
+        r["now"] = (r["entry"] + (p["sb"] / p["fa"] - 1) - cost) * 100
+
+
+def close_row(r, made, why):
+    r["made"], r["held"] = made, int((time.time() - r["since"]) * 1000)
+    closed.insert(0, r)
+    del closed[300:]
+    key = "n" if r["real"] else "r"
+    today["closed"][key] += 1
+    today["made"][key] += made
+    log(f"{'REAL' if r['real'] else 'PAPER'} closed {r['sym']}: {why}, made {made:+.4f} USDT after {r['held']} ms")
+
+
+def paper_open(sym, p):
+    r = row_for(sym, p, min(p["sA"] * p["sa"], p["fB"] * p["fb"], 500.0), False)
+    paper[sym] = r
+    log(f"PAPER {sym}: perp bid {p['fb']} over spot ask {p['sa']} by {r['gap']:+.4f}% on {r['size']:.0f} USDT")
+
+
+def paper_check(sym, p, force=""):
+    # the paper twin follows the same exit rule as a real shot, valued at the touch it sees
+    r = paper.get(sym)
+    if r is None or not (p["sa"] and p["fa"] and p["sb"]):
+        return
+    mark(r, p)
+    why = force
+    if not why:
+        if rule == "edge" and p["fb"] / p["sa"] - 1 <= cost / 2:
+            why = "gap within half the cost"
+        elif rule == "close" and p["fa"] <= p["sb"]:
+            why = "books closed back"
+    if why:
+        del paper[sym]
+        close_row(r, r["size"] * (r["entry"] + (p["sb"] / p["fa"] - 1) - cost), why)
+
+
 async def shot(sym):
     p = pairs[sym]
     seen_sa, seen_fb, seen_E, seen_T, seen_at = p["sa_s"], p["fb_s"], p["E"], p["T"], clock()
+    row = row_for(sym, p, float(leg), True)
     qty = (leg / Decimal(seen_sa) / p["step"]).to_integral_value(rounding=ROUND_DOWN) * p["step"]
     state["shots"] += 1
     k = state["shots"]
@@ -210,7 +276,7 @@ async def shot(sym):
     if sq < p["step"] and fq < p["step"]:
         log(f"SHOT {k} MISS: nothing filled, flat")
         return
-    h = state["held"] = {"sym": sym, "spot": sq, "fut": fq, "since": time.time(), "bought": su, "shorted": fu}
+    h = state["held"] = {"sym": sym, "spot": sq, "fut": fq, "since": time.time(), "bought": su, "shorted": fu, "row": row, "fees_in": sf + ff}
     if sq != fq:  # a lone or unequal fill: close the whole of both legs at market at once; a difference order can
         log(f"SHOT {k} UNEQUAL spot {sq} perp {fq}: closing both at market")  # fall under a step or a minimum
         await leave("unequal fill")
@@ -239,6 +305,7 @@ async def leave(why):
     fq, fu, ff, fs, fms, fid = got.get("fut", empty)
     state["fees"] += sf + ff
     state["net"] += su - h["bought"] + h["shorted"] - fu
+    cycle = su - h["bought"] + h["shorted"] - fu - sf - ff - h.get("fees_in", 0.0)
     log(f"EXIT spot sold {sq} for {su:.4f} USDT at {su / float(sq) if sq else 0:.6g}, fee {sf:.4f}, ack {sms:.2f} ms, Binance stamp {ss}, orderId {sid}; "
         f"perp bought {fq} for {fu:.4f} at {fu / float(fq) if fq else 0:.6g}, fee {ff:.4f}, ack {fms:.2f} ms, Binance stamp {fs}, orderId {fid}")
     left = {"spot": h["spot"] - sq, "fut": h["fut"] - fq}
@@ -251,6 +318,8 @@ async def leave(why):
     funding = sum(float(r["income"]) for r in rows)
     state["funding"] += funding
     log(f"EXIT funding received {funding:+.4f} USDT in {len(rows)} settlements")
+    if "row" in h:
+        close_row(h["row"], cycle + funding, why)
 
 
 async def run(coro):
@@ -271,6 +340,10 @@ def standing(sym):
     if armed is None or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted or not (p["sa"] and p["fb"]):
         return
     if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor:
+        if tab and not trading():  # switch off: the crossing gets a paper twin instead of money
+            if sym not in paper:
+                paper_open(sym, p)
+            return
         state["busy"] = True
         asyncio.ensure_future(run(shot(sym)))
 
@@ -288,6 +361,8 @@ def on_book(venue, d):
         p["sa_s"] = d["a"]
     else:
         p["fb_s"], p["E"], p["T"] = d["b"], d.get("E", 0), d.get("T", 0)
+    if tab and d["s"] in paper:
+        paper_check(d["s"], p)
     h = state["held"]
     if h and h["sym"] == d["s"] and not state["busy"] and not state["done"] and p["fa"] and p["sb"]:
         if rule == "edge" and p["fb"] / p["sa"] - 1 <= cost / 2:
@@ -302,7 +377,7 @@ def on_book(venue, d):
             state["busy"] = True
             asyncio.ensure_future(run(leave(why)))
             return
-    if not (p["sa"] and p["fb"]) or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted:
+    if not (p["sa"] and p["fb"]) or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted or d["s"] in paper:
         return
     if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor and (rule != "fund" or p["rate"] > 0):
         if p["armed"] is None:  # the fund rule only holds a short that is paid at the settlement
@@ -333,10 +408,53 @@ async def keep(venue, delay):
     while not state["done"]:
         try:
             transport, _ = await ws_connect(lambda: Feed(venue), feeds[venue], enable_auto_ping=True, auto_ping_idle_timeout=2, auto_ping_reply_timeout=2)
+            live[venue] += 1
             await transport.wait_disconnected()
+            live[venue] -= 1
         except Exception as error:
             log(f"{venue} feed: {error!r}")
             await asyncio.sleep(0.2)
+
+
+def write_board(started):
+    # the tab's file, written whole and swapped in: the day's real and paper numbers, every open twin and shot, the closed rows
+    open_rows = list(paper.values()) + ([state["held"]["row"]] if state["held"] and "row" in state["held"] else [])
+    for r in open_rows:
+        mark(r, pairs[r["sym"]])
+    doc = {"at": clock() // 1000000, "started": started, "ready": live["spot"] > 0 and live["fut"] > 0, "pairs": len(pairs),
+           "coverage": sum(1 for p in pairs.values() if p["sa"] and p["fa"]), "cap": 500.0, "floor": float(leg), "wait": {"n": 2, "r": 0},
+           "trading": trading(), "rule": rule, "hold": hold_max, "today": today, "open": len(open_rows),
+           "unreal": sum(r["size"] * r["now"] / 100 for r in open_rows), "carry": state["funding"],
+           "rows": [{k: v for k, v in r.items() if k not in ("since", "entry")} for r in open_rows + closed]}
+    with open(board + ".tmp", "w") as out:
+        out.write(orjson.dumps(doc).decode())
+    os.chmod(board + ".tmp", 0o640)
+    os.replace(board + ".tmp", board)
+    with open(memory + ".tmp", "w") as out:
+        out.write(orjson.dumps({"today": today, "closed": closed}).decode())
+    os.replace(memory + ".tmp", memory)
+
+
+async def keep_board():
+    started = clock() // 1000000
+    try:
+        kept = orjson.loads(open(memory, "rb").read())
+        if kept["today"]["date"] == today["date"]:
+            today.update(kept["today"])
+            closed.extend(kept["closed"])
+    except (OSError, ValueError, KeyError):
+        pass
+    while not state["done"]:
+        await asyncio.sleep(1)
+        if today["date"] != time.strftime("%Y-%m-%d", time.gmtime()):
+            today.update({"date": time.strftime("%Y-%m-%d", time.gmtime()), "closed": {"n": 0, "r": 0}, "made": {"n": 0.0, "r": 0.0}})
+        for sym in list(paper):
+            if time.time() - paper[sym]["since"] > hold_max:
+                paper_check(sym, pairs[sym], f"max hold {hold_max:.0f} s")
+        try:
+            write_board(started)
+        except OSError as error:
+            log(f"board: {error!r}")
 
 
 async def main():
@@ -348,6 +466,8 @@ async def main():
     log(f"{len(pairs)} pairs, leg {leg} USDT, spot taker {spot_fee * 100:.4f}% perp taker {fut_fee * 100:.4f}% four legs {cost * 100:.4f}%, "
         f"confirm {confirm * 1000:.0f} ms, touch floor {floor:.0f} USDT, exit {rule}, max hold {hold_max:.0f} s, {shots_wanted} shots in {window:.0f} s")
     tasks = [asyncio.ensure_future(keep(v, i * 0.3)) for i, v in enumerate(("spot", "fut", "spot", "fut", "spot", "fut"))]
+    if tab:
+        tasks.append(asyncio.ensure_future(keep_board()))
     started = time.time()
     while not state["done"]:
         await asyncio.sleep(0.05)

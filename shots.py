@@ -223,26 +223,36 @@ def close_row(r, made, why):
 
 
 def paper_open(sym, p):
-    r = row_for(sym, p, min(p["sA"] * p["sa"], p["fB"] * p["fb"], 500.0), False)
-    paper[sym] = r
-    log(f"PAPER {sym}: perp bid {p['fb']} over spot ask {p['sa']} by {r['gap']:+.4f}% on {r['size']:.0f} USDT")
+    # the paper lane runs the old tab's rule at the new speed, so its day number compares with the old tab's:
+    # take at the touch up to 500 USDT a coin, add when the gap comes back wider than any add before, hold until the
+    # books close back and never book a loss. Real shots use the exit rule and max hold given on the command line
+    r = paper.get(sym)
+    gap = p["fb"] / p["sa"] - 1
+    touch = min(p["sA"] * p["sa"], p["fB"] * p["fb"])
+    if r is None:
+        r = row_for(sym, p, min(touch, 500.0), False)
+        r["peak"] = gap
+        paper[sym] = r
+        log(f"PAPER {sym}: perp bid {p['fb']} over spot ask {p['sa']} by {r['gap']:+.4f}% on {r['size']:.0f} USDT")
+    elif gap > r["peak"] and r["size"] < 500.0:
+        add = min(touch, 500.0 - r["size"])
+        r["entry"] = (r["entry"] * r["size"] + gap * add) / (r["size"] + add)
+        r["size"] += add
+        r["lots"] += 1
+        r["peak"] = gap
+        r["gap"], r["net"] = r["entry"] * 100, (r["entry"] - cost) * 100
+        log(f"PAPER {sym} add {add:.0f} USDT at {gap * 100:+.4f}%, position {r['size']:.0f} USDT, {r['lots']} lots")
 
 
-def paper_check(sym, p, force=""):
-    # the paper twin follows the same exit rule as a real shot, valued at the touch it sees
+def paper_check(sym, p):
+    # the paper twin closes only when the books close back, so the close pays at least what the entry promised
     r = paper.get(sym)
     if r is None or not (p["sa"] and p["fa"] and p["sb"]):
         return
     mark(r, p)
-    why = force
-    if not why:
-        if rule == "edge" and p["fb"] / p["sa"] - 1 <= cost / 2:
-            why = "gap within half the cost"
-        elif rule == "close" and p["fa"] <= p["sb"]:
-            why = "books closed back"
-    if why:
+    if p["fa"] <= p["sb"]:
         del paper[sym]
-        close_row(r, r["size"] * (r["entry"] + (p["sb"] / p["fa"] - 1) - cost), why)
+        close_row(r, r["size"] * (r["entry"] + (p["sb"] / p["fa"] - 1) - cost), "books closed back")
 
 
 async def shot(sym):
@@ -343,9 +353,8 @@ def standing(sym):
     if armed is None or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted or not (p["sa"] and p["fb"]):
         return
     if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor:
-        if tab and not trading():  # switch off: the crossing gets a paper twin instead of money
-            if sym not in paper:
-                paper_open(sym, p)
+        if tab and not trading():  # switch off: the crossing feeds the paper lane instead of money
+            paper_open(sym, p)
             return
         state["busy"] = True
         asyncio.ensure_future(run(shot(sym)))
@@ -366,6 +375,8 @@ def on_book(venue, d):
         p["fb_s"], p["E"], p["T"] = d["b"], d.get("E", 0), d.get("T", 0)
     if tab and d["s"] in paper:
         paper_check(d["s"], p)
+        if d["s"] in paper and not (p["fb"] / p["sa"] - 1 > paper[d["s"]]["peak"]):
+            return  # an open twin waits for the close-back; only a wider gap than any add before arms an add
     h = state["held"]
     if h and h["sym"] == d["s"] and not state["busy"] and not state["done"] and p["fa"] and p["sb"]:
         if rule == "edge" and p["fb"] / p["sa"] - 1 <= cost / 2:
@@ -380,7 +391,7 @@ def on_book(venue, d):
             state["busy"] = True
             asyncio.ensure_future(run(leave(why)))
             return
-    if not (p["sa"] and p["fb"]) or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted or d["s"] in paper:
+    if not (p["sa"] and p["fb"]) or state["busy"] or state["held"] or state["done"] or state["shots"] >= shots_wanted:
         return
     if p["fb"] / p["sa"] - 1 > cost and p["sA"] * p["sa"] >= floor and p["fB"] * p["fb"] >= floor and (rule != "fund" or p["rate"] > 0):
         if p["armed"] is None:  # the fund rule only holds a short that is paid at the settlement
@@ -428,7 +439,7 @@ def write_board(started):
            "coverage": sum(1 for p in pairs.values() if p["sa"] and p["fa"]), "cap": 500.0, "floor": float(leg), "wait": {"n": 2, "r": 0},
            "trading": trading(), "rule": rule, "hold": hold_max, "today": today, "open": len(open_rows),
            "unreal": sum(r["size"] * r["now"] / 100 for r in open_rows), "carry": state["funding"],
-           "rows": [{k: v for k, v in r.items() if k not in ("since", "entry")} for r in open_rows + closed]}
+           "rows": [{k: v for k, v in r.items() if k not in ("since", "entry", "peak")} for r in open_rows + closed]}
     with open(board + ".tmp", "w") as out:
         out.write(orjson.dumps(doc).decode())
     os.chmod(board + ".tmp", 0o640)
@@ -451,9 +462,6 @@ async def keep_board():
         await asyncio.sleep(1)
         if today["date"] != time.strftime("%Y-%m-%d", time.gmtime()):
             today.update({"date": time.strftime("%Y-%m-%d", time.gmtime()), "closed": {"n": 0, "r": 0}, "made": {"n": 0.0, "r": 0.0}})
-        for sym in list(paper):
-            if time.time() - paper[sym]["since"] > hold_max:
-                paper_check(sym, pairs[sym], f"max hold {hold_max:.0f} s")
         try:
             write_board(started)
         except OSError as error:

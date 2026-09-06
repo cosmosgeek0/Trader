@@ -83,9 +83,12 @@ journal = open("/home/ssm-user/shots.log", "a")   # every line also lands here, 
 
 def log(text):
     line = f"{time.strftime('%H:%M:%S')}.{clock() // 1000 % 1000000:06d} {text}"
-    print(line, flush=True)
     journal.write(line + "\n")
     journal.flush()
+    try:
+        print(line, flush=True)
+    except OSError:  # the runner's ssh pipe can die mid-run; the journal already has the line, the money path goes on
+        pass
 
 
 class Lane(WSListener):
